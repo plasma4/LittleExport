@@ -7,7 +7,7 @@ A tiny, customizable JS tool that scrapes specified client-side storage types an
 - Cache Storage
 - Session Storage
 
-LittleExport uses streaming when available, and includes customizable URL-Keyed Persistence prevention. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into inspector to export data from it as well.
+LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into inspector to export data from it as well.
 
 ## Usage and building
 Use `little-export.min.js`. To build the minified code, use [JSCompress](https://jscompress.com/) (which uses `UglifyJS` 3 and `babel-minify`).
@@ -17,7 +17,7 @@ Example usage:
 // All object properties are optional. All boolean properties are assumed to be true if not specified.
 await LittleExport.export({
     "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will always be created instead; use in conjunction with onsuccess.
-    "password": "my-password", // Optional. If not included, file export type will be .tar.gz instead of .enc.
+    "password": "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
     // What to export
     "cookies": true,
     "localStorage": true,
