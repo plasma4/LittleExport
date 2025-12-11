@@ -9,7 +9,7 @@ A tiny, customizable JS tool that scrapes specified client-side storage types an
 
 LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into inspector to export data from it as well.
 
-## Usage and building
+## Usage and Building
 Use `little-export.min.js`. To build the minified code, use [JSCompress](https://jscompress.com/) (which uses `UglifyJS` 3 and `babel-minify`).
 
 Example usage:
@@ -163,7 +163,7 @@ LittleExport aims to be the standard for full web data export. It uses 600,000 i
 
 The file format specification is as follows:
 1.  **Archive Format:** GZIP-compressed USTAR `.tar` (typically `.tar.gz`).
-2.  **Encryption (Archive):** If enabled, file starts with signature `LE_ENC` (UTF-8) + `Salt` (16 bytes) + `AES-GCM Stream` (PBKDF2 SHA-256 derived key).
+2.  **Encryption (Archive):** If enabled, file starts with signature `LE_ENC` (UTF-8), then `Salt` (16 bytes), then 40 bytes of empty data, then `AES-GCM Stream` (PBKDF2 SHA-256 derived key).
 3.  **Directory Structure:**
     *   `/`: Raw files (mapped to OPFS).
     *   `data/`: Metadata.

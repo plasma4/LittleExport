@@ -8,7 +8,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 */
 (function () {
-  const CHUNK_SIZE = 1024 * 1024; // 1MB
+  const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
   const ENC = new TextEncoder();
   const DEC = new TextDecoder();
 
@@ -176,6 +176,12 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
     async start(controller) {
       controller.enqueue(ENC.encode("LE_ENC"));
       controller.enqueue(this.salt);
+      // For encryption verification
+      await this.encryptAndPush(
+        new Uint8Array(0),
+        controller,
+        await this.keyPromise
+      );
     }
     async transform(chunk, controller) {
       const key = await this.keyPromise;
