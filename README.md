@@ -15,9 +15,10 @@ Use `little-export.min.js`. To build the minified code, use [JSCompress](https:/
 Example usage:
 ```js
 // All object properties are optional. All boolean properties are assumed to be true if not specified.
-await LittleExport.export({
+await LittleExport.exportData({
     "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will always be created instead; use in conjunction with onsuccess.
     "password": "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
+
     // What to export
     "cookies": true,
     "localStorage": true,
@@ -51,8 +52,9 @@ await LittleExport.export({
     "logger": console.log // A function for logging. By default, an empty function is used.
 })
 
-await LittleExport.import({
-    "source": "URL", // Supports blob, HTTPS link, or file system handle [?].
+await LittleExport.importData({
+    "source": "URL", // Supports blob or HTTPS link.
+    "password": "my-password", // If not included, a prompt() will be generated if the file is encrypted.
 
     // What to import/restore, if included in the .tar.gz file. All default to true.
     "cookies": true,
