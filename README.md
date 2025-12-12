@@ -162,15 +162,24 @@ Thanks to [Scramjet's proxy code](https://github.com/MercuryWorkshop/scramjet/bl
 LittleExport aims to be the standard for full web data export. It uses 600,000 iterations for encryption using **PBKDF2 (SHA-256)** to derive a 256-bit key for **AES-GCM** encryption.
 
 The file format specification is as follows:
+
 1.  **Archive Format:** GZIP-compressed USTAR `.tar` (typically `.tar.gz`).
-2.  **Encryption (Archive):** If enabled, file starts with signature `LE_ENC` (UTF-8), then `Salt` (16 bytes), then 40 bytes of empty data, then `AES-GCM Stream` (PBKDF2 SHA-256 derived key).
+2.  **Encryption (Archive):** If enabled, file starts with signature `LE_ENC` (UTF-8), then `Salt` (16 bytes), then a 40-byte empty block (reserved/padding), followed by the `AES-GCM Stream`.
+    *   **Chunking:** The stream is encrypted in chunks (default 4MB). Each chunk in the stream consists of: `IV` (12 bytes) + `Length` (4 bytes, UInt32LE) + `Ciphertext`.
 3.  **Directory Structure:**
-    *   `/`: Raw files (mapped to OPFS).
-    *   `data/`: Metadata.
-        *   `ls.json`, `ss.json`, `cookies.json`: Storage dumps.
-        *   `idb/<db>/<store>/`: CBOR encoded records.
-    *   `opfs/`: Explicit OPFS mapping.
-4.  **URL Persistence:** Importing tools **SHOULD** shim `window.location` to `https://example.com/` (with `pathname` as `/`) to prevent data loss across domains, unless a consistently accessible and used custom location is used instead.
+    *   `/` (Root): Raw files (mapped directly to OPFS).
+    *   `opfs/`: Explicit OPFS mapping (files here are treated as OPFS file handles).
+    *   `data/`: Metadata and Key-Value storage.
+        *   `ls.json`, `ss.json`, `cookies.json`: Key-Value storage dumps.
+        *   `idb/<db>/schema.cbor`: The database version and object store definitions.
+        *   `idb/<db>/<store>/<id>.cbor`: CBOR encoded records.
+    *   **`data/blobs/`**: Externalized Binary Large Objects (Blobs) from IndexedDB.
+4.  **IndexedDB Blob Handling:**
+    *   To prevent excessive RAM usage during encoding, `Blob` objects found in IndexedDB are **not** stored inline in the CBOR.
+    *   They are assigned a UUID v4 and stored as raw files in `data/blobs/<uuid>`.
+    *   Inside the CBOR record, the Blob is replaced by a reference object: `{"__le_blob_ref": "<uuid>", "type": "<mime_type>", "size": <bytes>}`.
+    *   **Import Requirement:** Importers **MUST** extract `data/blobs/` content to a temporary storage area (e.g., a hidden OPFS folder) *before* or *during* the read stream, so that IDB records can resolve these references into valid Blob handles during insertion.
+5.  **URL Persistence:** Importing tools **SHOULD** shim `window.location` to `https://example.com/` (with `pathname` as `/`) to prevent data loss across domains, unless a consistently accessible and used custom location is used instead.
 
 ## Limitations
 - URL Persistence **MUST** be done by modifying the code beforehand or dynamically modifying source code with regexes (see RuntimeFS for an example).
