@@ -145,11 +145,11 @@ Use something like this:
             window.dispatchEvent(new HashChangeEvent("hashchange", { oldURL, newURL }));
         }
     });
-})("https://example.com/");
+})("https://example.com/"); // Change the URL to follow standardization!
 // Usage in RuntimeFS (similar regexes apply elsewhere, file types may need adjustment):
 // *.js $$ window.location -> window.__mockLocation
 // main.js $$ document.URL -> window.__mockLocation.href
-// You can either inject this into your HTML file or through other methods.
+// You can inject the JS to the HTML with something like index.html $ {{SCRIPT}} -> [compressed version of code above]
 
 // In rarer cases, applications will not use window.location, instead opting for using the location object directly, or even checking against the Location object. This will require case-by-case handling.
 ```
@@ -194,7 +194,7 @@ The file format specification is as follows:
 In the future, LittleExport might include:
 - More granular control for what to export
 - More performance improvements
-- StreamSaver support to allow GBs of export in non-Chromium browsers, and better memory handling with Blobs
+- StreamSaver support to allow GBs of export in non-Chromium browsers
 - UI for reading or customizing export data (potentially beyond the scope of this project)
 
 Give this repo a star if you're interested! :)
