@@ -7,7 +7,7 @@ A tiny, customizable JS tool that scrapes specified client-side storage types an
 - Cache Storage
 - Session Storage
 
-LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into inspector to export data from it as well.
+LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into an inspector to export data from an external application as well.
 
 ## Usage and Building
 Use `little-export.min.js`. To build the minified code, use [JSCompress](https://jscompress.com/) (which uses `UglifyJS` 3 and `babel-minify`).
@@ -185,7 +185,7 @@ The file format specification is as follows:
 
 ## Limitations
 - URL Persistence **MUST** be done by modifying the code beforehand or dynamically modifying source code with regexes (see RuntimeFS for an example).
-- LittleExport is more likely to crash when streaming is not supported (no `showSaveFilePicker` support), but should be able to handle a few hundred MB of data in all browsers. All other features should have Baseline support.
+- LittleExport is more likely to crash when streaming is not supported (no `showSaveFilePicker` support), but should be able to handle a few hundred MB of data in all browsers. All other features should have Baseline support. In the future, non-Chromium browsers might adopt parts of the File System API that allow for streamed exports.
 - Crashes may occur with extremely large individual Blobs in IndexedDB.
 - LittleExport is not fully/always ACID compliant if IndexedDB.
 - Importing data effectively gives the backup file root access to your application's state, and may even control caches. Be careful!
@@ -193,7 +193,6 @@ The file format specification is as follows:
 ## Future
 In the future, LittleExport might include:
 - More granular control for what to export
-- More performance improvements
 - StreamSaver support to allow GBs of export in non-Chromium browsers
 - UI for reading or customizing export data (potentially beyond the scope of this project)
 
