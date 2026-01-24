@@ -26,6 +26,7 @@ await LittleExport.exportData({
     "opfs": true,
     "cache": true,
     "session": true,
+    "logSpeed": 100, // Defaults to 100; meant for UI logging.
     "include": {
         "localStorage": ["key1", "key2"],
         "opfs": ["Content"],
@@ -63,6 +64,7 @@ await LittleExport.importData({
     "opfs": true,
     "cache": true,
     "session": true,
+    "logSpeed": 100, // Defaults to 100; meant for UI logging. For importing, this also acts as the minimum amount of time between UI updates.
     "include": {
         "localStorage": ["key1", "key2"], // Similar to export, see other function
     },
@@ -187,7 +189,8 @@ The file format specification is as follows:
 - URL Persistence **MUST** be done by modifying the code beforehand or dynamically modifying source code with regexes (see RuntimeFS for an example).
 - LittleExport is more likely to crash when streaming is not supported (no `showSaveFilePicker` support), but should be able to handle a few hundred MB of data in all browsers. All other features should have Baseline support. In the future, non-Chromium browsers might adopt parts of the File System API that allow for streamed exports.
 - Crashes may occur with extremely large individual Blobs in IndexedDB.
-- LittleExport is not fully/always ACID compliant if IndexedDB.
+- LittleExport is not fully/always ACID compliant. Ideally, stop anything that could influence export results before using the tool.
+- Theoretically, a giant single IndexedDB record or USTAR limitations (like very long file names or files over 8.5GB) will prevent data from being exportable.
 - Importing data effectively gives the backup file root access to your application's state, and may even control caches. Be careful!
 
 ## Future
