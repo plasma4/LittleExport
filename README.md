@@ -1,5 +1,7 @@
 # LittleExport
-A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). Supports:
+
+A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). File size is just under 50KB. Supports:
+
 - Cookies
 - localStorage
 - IndexedDB
@@ -7,12 +9,14 @@ A tiny, customizable JS tool that scrapes specified client-side storage types an
 - Cache Storage
 - Session Storage
 
-LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into an inspector to export data from an external application as well.
+LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. To support various data types (such as for IndexedDB), the `cbor-x` library is used. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into an inspector to export data from an external application as well.
 
 ## Usage and Building
+
 Use `little-export.min.js`. To build the minified code, use [JSCompress](https://jscompress.com/) (which uses `UglifyJS` 3 and `babel-minify`).
 
 Example usage:
+
 ```js
 // All object properties are optional. All boolean properties are assumed to be true if not specified.
 await LittleExport.exportData({
@@ -88,65 +92,91 @@ await LittleExport.importData({
 ```
 
 ## URL Persistence & Location Spoofing
+
 URL Persistence is an informal term that means that websites store data along with URLs. Examples include the Ruffle emulator (in `localStorage`) and Unity (in `IndexedDB`). If you export data from `example.com/v1/` and try to import it to `example.com/v2/` (or to different domains), it probably won't work.
 
 Because of this problem, you must normalize these URL keys during exporting or importing with a mock location object (and replace `document.URL` if needed). For standardization reasons, you should make this website `https://example.com/` whenever possible (see section below for more detail).
 
 ### Basic Location Mocking
+
 Use something like this:
 
 ```js
-(function(url) {
-    const internal = new URL(url);
+(function (url) {
+  const internal = new URL(url);
 
-    window.__mockLocation = {
-        // Properties redirect to the internal URL object
-        get href() { return internal.href; },
-        set href(v) { this.assign(v); },
-        get origin() { return internal.origin; },
-        get protocol() { return internal.protocol; },
-        get host() { return internal.host; },
-        get hostname() { return internal.hostname; },
-        get port() { return internal.port; },
-        get pathname() { return internal.pathname; },
-        get search() { return internal.search; },
-        get hash() { return internal.hash; },
-        
-        assign: function(url) {
-            const dest = new URL(url, internal.href);
-            if (dest.origin === internal.origin) {
-                // Update state without reloading
-                internal.href = dest.href; 
-                console.log(`[Virtual Nav] ${dest.href}`);
-            } else {
-                console.log(`[External Nav] ${dest.href}`);
-                window.location.assign(dest.href);
-            }
-        },
-        replace: function(url) {
-            const dest = new URL(url, internal.href);
-            if (dest.origin === internal.origin) {
-                internal.href = dest.href;
-                console.log(`[Virtual Replace] ${dest.href}`);
-            } else {
-                window.location.replace(dest.href);
-            }
-        },
-        reload: function() {
-            console.log("[Virtual Reload]");
-        },
-        toString: function() { return internal.href; }
-    };
+  window.__mockLocation = {
+    // Properties redirect to the internal URL object
+    get href() {
+      return internal.href;
+    },
+    set href(v) {
+      this.assign(v);
+    },
+    get origin() {
+      return internal.origin;
+    },
+    get protocol() {
+      return internal.protocol;
+    },
+    get host() {
+      return internal.host;
+    },
+    get hostname() {
+      return internal.hostname;
+    },
+    get port() {
+      return internal.port;
+    },
+    get pathname() {
+      return internal.pathname;
+    },
+    get search() {
+      return internal.search;
+    },
+    get hash() {
+      return internal.hash;
+    },
 
-    Object.defineProperty(window.__mockLocation, "hash", {
-        get: () => internal.hash,
-        set: (v) => {
-            const oldURL = internal.href;
-            internal.hash = v;
-            const newURL = internal.href;
-            window.dispatchEvent(new HashChangeEvent("hashchange", { oldURL, newURL }));
-        }
-    });
+    assign: function (url) {
+      const dest = new URL(url, internal.href);
+      if (dest.origin === internal.origin) {
+        // Update state without reloading
+        internal.href = dest.href;
+        console.log(`[Virtual Nav] ${dest.href}`);
+      } else {
+        console.log(`[External Nav] ${dest.href}`);
+        window.location.assign(dest.href);
+      }
+    },
+    replace: function (url) {
+      const dest = new URL(url, internal.href);
+      if (dest.origin === internal.origin) {
+        internal.href = dest.href;
+        console.log(`[Virtual Replace] ${dest.href}`);
+      } else {
+        window.location.replace(dest.href);
+      }
+    },
+    reload: function () {
+      console.log("[Virtual Reload]");
+    },
+    toString: function () {
+      return internal.href;
+    },
+  };
+
+  Object.defineProperty(window.__mockLocation, "hash", {
+    get: () => internal.hash,
+    set: (v) => {
+      const oldURL = internal.href;
+      internal.hash = v;
+      const newURL = internal.href;
+      window.dispatchEvent(
+        new HashChangeEvent("hashchange", { oldURL, newURL }),
+      );
+    },
+  });
 })("https://example.com/"); // Change the URL to follow standardization!
 // Usage in RuntimeFS (similar regexes apply elsewhere, file types may need adjustment):
 // *.js $$ window.location -> window.__mockLocation
@@ -163,29 +193,31 @@ In order to do this, it is necessary to modify code beforehand, use a proxy whic
 Thanks to [Scramjet's proxy code](https://github.com/MercuryWorkshop/scramjet/blob/main/src/client/location.ts) for inspiring this.
 
 ## Standardization
+
 LittleExport aims to be the standard for full web data export. It uses 600,000 iterations for encryption using **PBKDF2 (SHA-256)** to derive a 256-bit key for **AES-GCM** encryption.
 
 The file format specification is as follows:
 
 1.  **Archive Format:** GZIP-compressed USTAR `.tar` (typically `.tar.gz`).
 2.  **Encryption (Archive):** If enabled, file starts with signature `LE_ENC` (UTF-8), then `Salt` (16 bytes), then a 40-byte empty block (reserved/padding), followed by the `AES-GCM Stream`.
-    *   **Chunking:** The stream is encrypted in chunks (default 4MB). Each chunk in the stream consists of: `IV` (12 bytes) + `Length` (4 bytes, UInt32LE) + `Ciphertext`.
+    - **Chunking:** The stream is encrypted in chunks (default 4MB). Each chunk in the stream consists of: `IV` (12 bytes) + `Length` (4 bytes, UInt32LE) + `Ciphertext`.
 3.  **Directory Structure:**
-    *   `/` (Root): Raw files (mapped directly to OPFS).
-    *   `opfs/`: Explicit OPFS mapping (files here are treated as OPFS file handles).
-    *   `data/`: Metadata and Key-Value storage.
-        *   `ls.json`, `ss.json`, `cookies.json`: Key-Value storage dumps.
-        *   `idb/<db>/schema.cbor`: The database version and object store definitions.
-        *   `idb/<db>/<store>/<id>.cbor`: CBOR encoded records.
-    *   **`data/blobs/`**: Externalized Binary Large Objects (Blobs) from IndexedDB.
+    - `/` (Root): Raw files (mapped directly to OPFS).
+    - `opfs/`: Explicit OPFS mapping (files here are treated as OPFS file handles).
+    - `data/`: Metadata and Key-Value storage.
+      - `ls.json`, `ss.json`, `cookies.json`: Key-Value storage dumps.
+      - `idb/<db>/schema.cbor`: The database version and object store definitions.
+      - `idb/<db>/<store>/<id>.cbor`: CBOR encoded records.
+    - **`data/blobs/`**: Externalized Binary Large Objects (Blobs) from IndexedDB.
 4.  **IndexedDB Blob Handling:**
-    *   To prevent excessive RAM usage during encoding, `Blob` objects found in IndexedDB are **not** stored inline in the CBOR.
-    *   They are assigned a UUID v4 and stored as raw files in `data/blobs/<uuid>`.
-    *   Inside the CBOR record, the Blob is replaced by a reference object: `{"__le_blob_ref": "<uuid>", "type": "<mime_type>", "size": <bytes>}`.
-    *   **Import Requirement:** Importers **MUST** extract `data/blobs/` content to a temporary storage area (e.g., a hidden OPFS folder) *before* or *during* the read stream, so that IDB records can resolve these references into valid Blob handles during insertion.
+    - To prevent excessive RAM usage during encoding, `Blob` objects found in IndexedDB are **not** stored inline in the CBOR.
+    - They are assigned a UUID v4 and stored as raw files in `data/blobs/<uuid>`.
+    - Inside the CBOR record, the Blob is replaced by a reference object: `{"__le_blob_ref": "<uuid>", "type": "<mime_type>", "size": <bytes>}`.
+    - **Import Requirement:** Importers **MUST** extract `data/blobs/` content to a temporary storage area (e.g., a hidden OPFS folder) _before_ or _during_ the read stream, so that IDB records can resolve these references into valid Blob handles during insertion.
 5.  **URL Persistence:** Importing tools **SHOULD** shim `window.location` to `https://example.com/` (with `pathname` as `/`) to prevent data loss across domains, unless a consistently accessible and used custom location is used instead.
 
 ## Limitations
+
 - URL Persistence **MUST** be done by modifying the code beforehand or dynamically modifying source code with regexes (see RuntimeFS for an example).
 - LittleExport is more likely to crash when streaming is not supported (no `showSaveFilePicker` support), but should be able to handle a few hundred MB of data in all browsers. All other features should have Baseline support. In the future, non-Chromium browsers might adopt parts of the File System API that allow for streamed exports.
 - Crashes may occur with extremely large individual Blobs in IndexedDB.
@@ -194,7 +226,9 @@ The file format specification is as follows:
 - Importing data effectively gives the backup file root access to your application's state, and may even control caches. Be careful!
 
 ## Future
+
 In the future, LittleExport might include:
+
 - More granular control for what to export
 - StreamSaver support to allow GBs of export in non-Chromium browsers
 - UI for reading or customizing export data (potentially beyond the scope of this project)
