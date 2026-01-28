@@ -9,7 +9,9 @@ A tiny, customizable JS tool that scrapes specified client-side storage types an
 - Cache Storage
 - Session Storage
 
-LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. To support various data types (such as for IndexedDB), the `cbor-x` library is used. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into an inspector to export data from an external application as well.
+LittleExport uses streaming when available, and includes URL-Keyed Persistence prevention instructions below. LittleExport supports granular export/import options and `async`, allowing advanced checks to only export certain DBs or files in OPFS, for example (see the Modes section). To support various data types (such as for IndexedDB), the `cbor-x` library is used. You can also run a JS bookmarklet or paste LittleExport (in `main.js`) into an inspector to export data from an external application as well.
+
+LittleExport requires ES11 or later (supported by over 95% of all browsers). Note that a reload may be necessary after importing to fix issues with a website.
 
 ## Usage and Building
 
@@ -22,9 +24,10 @@ Example usage:
 await LittleExport.exportData({
     "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will always be created instead; use in conjunction with onsuccess.
     "password": "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
+    "graceful": true, // Gracefully handles errors like IndexedDB locks. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
 
     // What to export
-    "cookies": true,
+    "cookies": true, // Note: any value that is !== false is considered "true" by LittleExport.
     "localStorage": true,
     "idb": true,
     "opfs": true,
@@ -32,14 +35,39 @@ await LittleExport.exportData({
     "session": true,
     "logSpeed": 100, // Defaults to 100; meant for UI logging.
     "include": {
-        "localStorage": ["key1", "key2"],
-        "opfs": ["Content"],
-        "idb": ["/idbfs", "test"]
-    },
+        "localStorage": ["settings", "user_"], // Matches "settings", "user_id", but NOT "user_name"
+
+        // For the Origin Private File System: the path argument is the relative file path, such as "Logs/2023/error.txt"
+        "opfs": (path) => {
+            // Only export files inside a "Saves" folder
+            // Note: Filtering a folder automatically includes/excludes all its children!
+            return path.startsWith("Saves/");
+        },
+
+        // IndexedDB
+        // The path argument is the logical name of the DB/store, such as "DatabaseName" OR "DatabaseName/StoreName"
+        "idb": (path) => {
+            if (path === "MyDB") return true;
+            // If the DB is allowed, the function is called again for every Object Store.
+            // The format is "DB/Store".
+
+            // Example: Exclude the "Cache" store in "MyGameDB"
+            if (path === "MyGameDB/Cache") return false;
+
+            // Note how slashes are preserved
+            if (path === "/idbfs") return true; // Allow the Emscripten DB
+            if (path.startsWith("/idbfs/")) return true; // Allow all its stores
+
+            return false;
+        }
+    }
     "exclude": {
-        // Same as "include" (see above), but acts as a blacklist instead of a whitelist
+        // Same options as "include" (see above), but acts as a blacklist instead of a whitelist
     },
-    "dbFilter": (dbName) => dbName !== "InternalDB" // Function to filter IndexedDB databases
+
+    "onerror": function () {
+        // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
+    },
 
     "customItems": [
         { path: "config.json", data: { theme: "dark", user: "123" } }, // Objects are auto-converted to JSON
@@ -60,6 +88,7 @@ await LittleExport.exportData({
 await LittleExport.importData({
     "source": "URL", // Supports blob or HTTPS link.
     "password": "my-password", // If not included, a prompt() will be generated if the file is encrypted.
+    "graceful": true, // Gracefully handles errors like IndexedDB locks. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
 
     // What to import/restore, if included in the .tar.gz file. All default to true.
     "cookies": true,
@@ -70,15 +99,14 @@ await LittleExport.importData({
     "session": true,
     "logSpeed": 100, // Defaults to 100; meant for UI logging. For importing, this also acts as the minimum amount of time between UI updates.
     "include": {
-        "localStorage": ["key1", "key2"], // Similar to export, see other function
+        "localStorage": ["key1", "key2"], // Same as exportData, see function above for more.
     },
     "exclude": {
-        // Same as "include" (see above), but acts as a blacklist instead of a whitelist
+        // Same as "include", but acts as a blacklist instead of a whitelist
     }
 
-    // Functions
     "onerror": function () {
-        // If the import fails (such as due to IndexedDB locks).
+        // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
     },
 
     "logger": console.log, // A function for logging. By default, an empty function is used.
@@ -89,6 +117,107 @@ await LittleExport.importData({
         }
     }
 })
+```
+
+## Modes
+
+LittleExport supports two modes for importing/exporting:
+
+- **Simple**: Use include and exclude with arrays or simple functions.
+- **Recursive Crawling**: Use onVisit for high-performance, granular control with bitwise flags and live handles.
+
+If an `onVisit` function is passed then recursive crawling will be used; simple is the default. The `include`/`exclude` parameters will be ignored with recursive crawling.
+
+Recursive crawling requires an `onVisit` function that returns one of four possible values: `SKIP`, `PROCESS`, `TRUST`, and `STOP`. `SKIP` means to not process an item (and its children if necessary), `PROCESS` processes the current item, `TRUST` processes the current item and everything inside it, while `STOP` immediately aborts. The `onVisit` function can also return a promise to be async; if a promise is returned then an `await` is created. For example, it is possible to `TRUST` localStorage but add more granular options for `OPFS`.
+
+Usage of the `await` feature can allow you to "query" the user live on if something shold be exported! Also, `onVisit` is called _before_ any exporting happens, making it possible to modify values right before being exported, or even destroy data before `SKIP`ping.
+
+```js
+// An example is worth a thousand words!
+const { TYPE, DECISION } = LittleExport;
+
+// onVisit acts the same with importData. Note that LittleExport attempts to minimize the amount of calls to onVisit; this means it will entirely skip asking for a category if importData's file doesn't include any data for said category.
+await LittleExport.exportData({
+  // ... include other arguments if needed: source/onCustomItem for importData, customItems for exportData, as well as download, password, graceful, logSpeed, onerror, onsuccess, and logger
+  // Note how the function isn't async, see the comment above the askUser call later.
+  onVisit: (type, path, meta) => {
+    // Possible types: OPFS (1), IDB (2), LS (4), SS (8), COOKIE (16), CACHE (32)
+    if (userAborted) {
+      return DECISION.ABORT; // Immediately stop exporting and clean-up. Note that onerror is not called if LittleExport is aborted by the return of ABORT. The type order in the comment above represents what order categories will be exported in, if that detail matters.
+    }
+
+    // LittleExport won't continue until either onVisit returns or the promise returned from onVisit resolves. This means you can do such tomfoolery like modifying values before exporting or prompting a user.
+    if (type === TYPE.LS) {
+      // On the first call to onVisit for a category, no path/meta is provided because it's asking if anything from the whole category should be considered.
+      // Note that LS, SS, and COOKIES export a single array element for the path, such as ["key"].
+      return DECISION.TRUST;
+    } else if (type === TYPE.OPFS) {
+      if (!path) {
+        // Allow processing of the whole OPFS category
+        return DECISION.PROCESS;
+      }
+      if (path[0] === "Assets") {
+        return DECISION.TRUST; // Allow Assets/... folder through, including the files inside ending in .tmp
+      }
+      // Don't allow Content/Cache through
+      if (path[0] === "Content" && path[1] === "Cache") return DECISION.SKIP;
+      // If file ends with .tmp, skip!
+      if (path[path.length - 1].endsWith(".tmp")) return DECISION.SKIP;
+      // Keep going, allow everything elee through
+      return DECISION.PROCESS;
+    } else if (type & (TYPE.SS | TYPE.CACHE | TYPE.COOKIE)) {
+      // If any of those types are requested, just skip entirely.
+      // & and | act as bit flags; you can use either equality checking or bit flags as you wish.
+      return DECISION.SKIP;
+    }
+    // At this point the type has to be either OPFS/IDB.
+
+    if (type === TYPE.IDB) {
+      if (path.length === 1) {
+        const dbName = path[0];
+        // If it's a heavy DB, ask the user.
+        if (dbName === "/idbfs" || meta.database.objectStoreNames.length > 50) {
+          // Note the specific lack of async in the function. This is for performance reasons; it's not advised to make onVisit async normally as this requires LittleExport to await every individual visit.
+          // The actual performance penalty varies but will be most significant when you have a lot of different possible "keys" (like in localStorage/IDB), or a lot of OPFS files. If you're asking the user every single time, then it's probably fine to make the function async.
+          return askUser(
+            `Export DB ${dbName}?`,
+            DECISION.PROCESS, // Examine the specific DB stores (below)
+            DECISION.SKIP,
+          );
+        }
+        // For other DBs, just trust them and everything inside.
+        return DECISION.TRUST;
+      }
+
+      // Store-level check (Only reached if DB check returned PROCESS)
+      if (path.length === 2) {
+        const [dbName, storeName] = path;
+        return storeName.toLowerCase().includes("cache") ||
+          storeName.includes("temp")
+          ? DECISION.SKIP
+          : DECISION.TRUST;
+      }
+
+      // path.length won't ever go past 2 for IndexedDB.
+    }
+
+    return DECISION.PROCESS; // Allow (a default value must be returned)
+    // You'd want to make sure to minimize the amount of .PROCESS returned (using TRUST/SKIP as early as possible) for optimal performance.
+  },
+});
+
+// Returns a promise after prompting the user.
+function askUser(what, yesCase, noCase) {
+  // Note that returning a Promise does incur a small performance penalty but it is usually better than making the onVisit function async and creating a microtask every time instead of just when a prompt is necessary.
+  return new Promise((resolve) => {
+    // In practice you would probably want to use a custom menu.
+    if (prompt(what)) {
+      resolve(yesCase);
+    } else {
+      resolve(noCase);
+    }
+  });
+}
 ```
 
 ## URL Persistence & Location Spoofing
@@ -160,6 +289,7 @@ Use something like this:
     },
     reload: function () {
       console.log("[Virtual Reload]");
+      // you can reload here if you want
     },
     toString: function () {
       return internal.href;
@@ -194,27 +324,63 @@ Thanks to [Scramjet's proxy code](https://github.com/MercuryWorkshop/scramjet/bl
 
 ## Standardization
 
+## Standardization
+
 LittleExport aims to be the standard for full web data export. It uses 600,000 iterations for encryption using **PBKDF2 (SHA-256)** to derive a 256-bit key for **AES-GCM** encryption.
 
 The file format specification is as follows:
 
 1.  **Archive Format:** GZIP-compressed USTAR `.tar` (typically `.tar.gz`).
-2.  **Encryption (Archive):** If enabled, file starts with signature `LE_ENC` (UTF-8), then `Salt` (16 bytes), then a 40-byte empty block (reserved/padding), followed by the `AES-GCM Stream`.
-    - **Chunking:** The stream is encrypted in chunks (default 4MB). Each chunk in the stream consists of: `IV` (12 bytes) + `Length` (4 bytes, UInt32LE) + `Ciphertext`.
+
+2.  **Encryption (Optional):** If enabled, the file starts with:
+    - `LE_ENC` signature (6 bytes, UTF-8)
+    - `Salt` (16 bytes, random)
+    - `Verification Block`: An encrypted empty chunk used for password verification
+    - `Encrypted Data Stream`: The GZIP-compressed tar data
+
+    **Chunk Format:** Each encrypted chunk consists of:
+    - `IV` (12 bytes, random per chunk)
+    - `Length` (4 bytes, UInt32LE, size of ciphertext)
+    - `Ciphertext` (variable, AES-GCM encrypted data with 16-byte auth tag)
+
+    Default chunk size is 4MB before encryption.
+
 3.  **Directory Structure:**
-    - `/` (Root): Raw files (mapped directly to OPFS).
-    - `opfs/`: Explicit OPFS mapping (files here are treated as OPFS file handles).
-    - `data/`: Metadata and Key-Value storage.
-      - `ls.json`, `ss.json`, `cookies.json`: Key-Value storage dumps.
-      - `idb/<db>/schema.cbor`: The database version and object store definitions.
-      - `idb/<db>/<store>/<id>.cbor`: CBOR encoded records.
-    - **`data/blobs/`**: Externalized Binary Large Objects (Blobs) from IndexedDB.
+    - `opfs/`: Origin Private File System files and directories
+    - `data/`: Metadata and structured storage
+      - `ls.json`: localStorage key-value dump
+      - `ss.json`: sessionStorage key-value dump
+      - `cookies.json`: Cookie key-value dump
+      - `custom/`: User-defined custom items
+      - `blobs/`: Externalized Blob objects from IndexedDB
+      - `idb/<db>/schema.cbor`: Database schema (version, object stores, indexes)
+      - `idb/<db>/<store>/<chunk>.cbor`: CBOR-encoded records in batches
+      - `cache/<cacheName>/<hash>.cbor`: Cache Storage entries with metadata
+
 4.  **IndexedDB Blob Handling:**
-    - To prevent excessive RAM usage during encoding, `Blob` objects found in IndexedDB are **not** stored inline in the CBOR.
-    - They are assigned a UUID v4 and stored as raw files in `data/blobs/<uuid>`.
-    - Inside the CBOR record, the Blob is replaced by a reference object: `{"__le_blob_ref": "<uuid>", "type": "<mime_type>", "size": <bytes>}`.
-    - **Import Requirement:** Importers **MUST** extract `data/blobs/` content to a temporary storage area (e.g., a hidden OPFS folder) _before_ or _during_ the read stream, so that IDB records can resolve these references into valid Blob handles during insertion.
-5.  **URL Persistence:** Importing tools **SHOULD** shim `window.location` to `https://example.com/` (with `pathname` as `/`) to prevent data loss across domains, unless a consistently accessible and used custom location is used instead.
+    - `Blob` objects in IndexedDB are stored separately in `data/blobs/<uuid>` to prevent RAM exhaustion
+    - Inside CBOR records, Blobs are replaced with reference objects:
+      ```json
+      {"__le_blob_ref": "<uuid>", "type": "<mime_type>", "size": <bytes>}
+      ```
+    - **Import Requirement:** Importers MUST extract `data/blobs/` to temporary storage (e.g., `.rfs_temp_blobs` in OPFS) before processing IDB records, then clean up after import completes
+
+5.  **CBOR Encoding:** IndexedDB records and Cache entries use CBOR for type preservation. Special markers:
+    - `__le_blob_ref`: External blob reference (see above)
+    - `__le_circular`: Indicates a circular reference that was pruned
+
+6.  **Cache Storage Format:** Each cached response is stored as CBOR with:
+
+    ```js
+    {
+      meta: { url, status, headers, type },
+      data: Uint8Array
+    }
+    ```
+
+7.  **URL Persistence:** Importing tools SHOULD shim `window.location` to `https://example.com/` (with `pathname` as `/`) to prevent data loss across domains, unless a consistently accessible custom location is used instead.
+
+8.  **Path Encoding:** Database names, store names, and cache names are URL-encoded in file paths using `encodeURIComponent()`.
 
 ## Limitations
 
