@@ -222,9 +222,11 @@ function askUser(what, yesCase, noCase) {
 
 ## URL Persistence & Location Spoofing
 
-URL Persistence is an informal term that means that websites store data along with URLs. Examples include the Ruffle emulator (in `localStorage`) and Unity (in `IndexedDB`). If you export data from `example.com/v1/` and try to import it to `example.com/v2/` (or to different domains), it probably won't work.
+URL Persistence is an informal term that means that websites/tools often identify data by URLs. Examples include the Ruffle emulator (in `localStorage`) and Unity (in binary `IndexedDB`), with varying levels of modification difficulty after set in stone. The use of LittleExport is intended to work across domains to make data more resilient, so it's advised to avoid this.
 
-Because of this problem, you must normalize these URL keys during exporting or importing with a mock location object (and replace `document.URL` if needed). For standardization reasons, you should make this website `https://example.com/` whenever possible (see section below for more detail).
+If you export data from `example.com/v1/` and try to import it to `example.com/v2/` (or to different domains), it probably won't work.
+
+Because of this problem, you must normalize these URL keys during exporting or importing with a mock location object (and replace `document.URL` if needed), unless you are using a rewriter like Scramjet that can consistently produce the same faked URL. For standardization reasons, you should make this website `https://example.com/` whenever possible (see section below for more detail).
 
 ### Basic Location Mocking
 
@@ -324,15 +326,13 @@ Thanks to [Scramjet's proxy code](https://github.com/MercuryWorkshop/scramjet/bl
 
 ## Standardization
 
-## Standardization
-
-LittleExport aims to be the standard for full web data export. It uses 600,000 iterations for encryption using **PBKDF2 (SHA-256)** to derive a 256-bit key for **AES-GCM** encryption.
+LittleExport aims to be the standard for full web data export.
 
 The file format specification is as follows:
 
 1.  **Archive Format:** GZIP-compressed USTAR `.tar` (typically `.tar.gz`).
 
-2.  **Encryption (Optional):** If enabled, the file starts with:
+2.  **Encryption (Optional):** LittleExport uses 600,000 iterations for encryption using **PBKDF2 (SHA-256)** to derive a 256-bit key for **AES-GCM** encryption. If enabled, the file starts with:
     - `LE_ENC` signature (6 bytes, UTF-8)
     - `Salt` (16 bytes, random)
     - `Verification Block`: An encrypted empty chunk used for password verification
@@ -343,7 +343,7 @@ The file format specification is as follows:
     - `Length` (4 bytes, UInt32LE, size of ciphertext)
     - `Ciphertext` (variable, AES-GCM encrypted data with 16-byte auth tag)
 
-    Default chunk size is 4MB before encryption.
+    Default chunk size is hard-coded to 4MB before encryption.
 
 3.  **Directory Structure:**
     - `opfs/`: Origin Private File System files and directories
