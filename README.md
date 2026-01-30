@@ -65,9 +65,6 @@ await LittleExport.exportData({
         // Same options as "include" (see above), but acts as a blacklist instead of a whitelist
     },
 
-    "onerror": function () {
-        // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
-    },
 
     "customItems": [
         { path: "config.json", data: { theme: "dark", user: "123" } }, // Objects are auto-converted to JSON
@@ -75,14 +72,16 @@ await LittleExport.exportData({
         { path: "profile.png", data: blobObj }                         // Blobs are streamed directly
     ],
 
-    // Functions
-    "onerror": (err) => console.error("Export failed:", err),
+
+    "onerror": function (err) {
+        // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
+    },
     "onsuccess": (blobUrl) => {
         // Only called if download: false.
         // Use this to manually trigger a download or upload the blob elsewhere.
         console.log("Blob created:", blobUrl);
     }
-    "logger": console.log // A function for logging. By default, an empty function is used.
+    "logger": console.log // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
 })
 
 await LittleExport.importData({
@@ -108,6 +107,7 @@ await LittleExport.importData({
     "onerror": function () {
         // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
     },
+    // No onsuccess.
 
     "logger": console.log, // A function for logging. By default, an empty function is used.
     "onCustomItem": async (path, data) => {
@@ -138,7 +138,7 @@ const { TYPE, DECISION } = LittleExport;
 
 // onVisit acts the same with importData. Note that LittleExport attempts to minimize the amount of calls to onVisit; this means it will entirely skip asking for a category if importData's file doesn't include any data for said category.
 await LittleExport.exportData({
-  // ... include other arguments if needed: source/onCustomItem for importData, customItems for exportData, as well as download, password, graceful, logSpeed, onerror, onsuccess, and logger
+  // ... include other arguments if needed: source/onCustomItem for importData, customItems/onsuccess for exportData, as well as download, password, graceful, logSpeed, onerror, and logger
   // Note how the function isn't async, see the comment above the askUser call later.
   onVisit: (type, path, meta) => {
     // Possible types: OPFS (1), IDB (2), LS (4), SS (8), COOKIE (16), CACHE (32)
@@ -395,7 +395,6 @@ The file format specification is as follows:
 
 In the future, LittleExport might include:
 
-- More granular control for what to export
 - StreamSaver support to allow GBs of export in non-Chromium browsers
 - UI for reading or customizing export data (potentially beyond the scope of this project)
 
