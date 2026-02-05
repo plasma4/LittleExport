@@ -6,7 +6,7 @@
 
   function createYielder(threshold = 100) {
     // Testing has shown that Chromium's performance.now() is worst-case slower than all other browsers (but can still be called millions of times per second). Date.now() Browsers like Firefox actually have performance.now() over 10x faster than Date.now(), upwards of hundreds of millions of checks per second. However, this shouldn't really matter too much here as yielding is not checked often enough for this to add up significantly.
-    let lastYield = Date.now();
+    let lastYield = 0;
     let inflight = null;
 
     const channel = new MessageChannel();
@@ -308,7 +308,7 @@
 
     async writeEntry(path, data) {
       const bytes = typeof data === "string" ? ENC.encode(data) : data;
-      const size = bytes.length;
+      const size = bytes.byteLength;
       await this.smartWrite(path, size, async () => {
         await this.write(bytes);
       });
@@ -320,7 +320,6 @@
 
       if (needsPaxPath || needsPaxSize) {
         const paxData = createPaxData(path, size);
-        // PAX header convention: PaxHeaders/filename
         const safeName =
           "PaxHeaders/" + (path.length > 50 ? path.slice(0, 50) : path);
 
@@ -339,6 +338,7 @@
     }
 
     async writeStream(path, size, readableStream) {
+      let contentWritten = 0; // Use a local variable for pure content tracking
       await this.smartWrite(path, size, async () => {
         const reader = readableStream.getReader();
         try {
@@ -346,8 +346,8 @@
             const { done, value } = await reader.read();
             if (done) break;
             await this.write(value);
-            if (this.onFileProgress)
-              this.onFileProgress(this.bytesWritten, size);
+            contentWritten += value.byteLength;
+            if (this.onFileProgress) this.onFileProgress(contentWritten, size);
             const p = this.yielder();
             if (p) await p;
           }
@@ -363,7 +363,6 @@
 
       if (needsPax) {
         const paxData = createPaxData(path, size);
-        // PAX Header name is arbitrary, usually "PaxHeaders/filename"
         const safePaxName =
           "PaxHeaders/" + (path.length > 50 ? path.slice(0, 50) : path);
 
@@ -382,8 +381,11 @@
           size === 0 && path.endsWith("/") ? "5" : "0",
         ),
       );
+      const prevFileProgress = this.bytesWritten;
+      this.bytesWritten = 0;
       if (contentFn) await contentFn();
       await this.pad();
+      this.bytesWritten = 0;
     }
 
     async writeDir(path) {
@@ -423,7 +425,7 @@
     }
 
     async close() {
-      await this.write(new Uint8Array(1024));
+      await this.write(new Uint8Array(1024)); // EOF
       await this.flush();
       await this.writer.close();
     }
@@ -844,7 +846,7 @@
       // Custom items (always processed)
       for (const item of opts.customItems) {
         if (aborted) break;
-        status.category = "Custom";
+        status.category = "custom";
         status.detail = item.path;
         const path = `data/custom/${item.path}`;
         if (item.data instanceof Blob) {
@@ -1075,7 +1077,7 @@
                   }
                 }
 
-                status.detail = `${name} / ${sName}`;
+                status.detail = `${name}/${sName}`;
 
                 let lastKey = null;
                 let chunkId = 0;
@@ -1157,7 +1159,6 @@
 
         if (!aborted && categoryDecision !== DECISION.SKIP) {
           status.category = "Storage";
-          status.detail = "Local Storage";
           const d = {};
           const trustAll = categoryDecision === DECISION.TRUST;
 
@@ -1206,7 +1207,6 @@
 
         if (!aborted && categoryDecision !== DECISION.SKIP) {
           status.category = "Storage";
-          status.detail = "Session Storage";
           const d = {};
           const trustAll = categoryDecision === DECISION.TRUST;
 
@@ -1255,7 +1255,6 @@
 
         if (!aborted && categoryDecision !== DECISION.SKIP) {
           status.category = "Storage";
-          status.detail = "Cookies";
           const c = {};
           const trustAll = categoryDecision === DECISION.TRUST;
 
@@ -1274,8 +1273,7 @@
 
             if (!key) continue;
 
-            status.detail = `cookie: ${key}`;
-
+            status.detail = `Cookie: ${key}`;
             let shouldInclude = trustAll;
 
             if (!shouldInclude) {
@@ -1385,7 +1383,8 @@
         }
       }
 
-      status.category = "Finishing";
+      status.category = "finishing";
+      status.detail = "almost done";
       await tar.close();
       await exportFinishedPromise;
 
@@ -1559,14 +1558,19 @@
       }
       rawReader.releaseLock();
 
+      let totalRead = 0;
       const combinedStream = new ReadableStream({
         async start(controller) {
-          for (const chunk of initialChunks) controller.enqueue(chunk);
+          for (const chunk of initialChunks) {
+            totalRead += chunk.byteLength;
+            controller.enqueue(chunk);
+          }
           const reader = rawStream.getReader();
           try {
             while (true) {
               const { value, done } = await reader.read();
               if (done) break;
+              totalRead += value.byteLength;
               controller.enqueue(value);
             }
             controller.close();
@@ -1609,7 +1613,6 @@
       const reader = inputStream.getReader();
       const streamBuffer = new ChunkBuffer();
       let done = false;
-      let totalRead = 0;
 
       async function ensure(n) {
         while (!streamBuffer.has(n) && !done) {
@@ -1650,7 +1653,7 @@
             if (p) {
               let msg = `Importing ${status.category}: ${(totalRead / 1e6).toFixed(2)} MB`;
               if (size > 1e6) {
-                msg += ` (${status.detail}: ${(size - remaining / 1e6).toFixed(1)}/${(size / 1e6).toFixed(1)} MB)`;
+                msg += ` (${status.detail}: ${((size - remaining) / 1e6).toFixed(1)}/${(size / 1e6).toFixed(1)} MB)`;
               } else {
                 msg += ` (${status.detail})`;
               }
@@ -1679,7 +1682,9 @@
             }
           }
         } finally {
-          await writer.close();
+          try {
+            await writer.close();
+          } catch (e) {}
         }
       }
 
@@ -2165,7 +2170,7 @@
 
   function folderToTarStream(source, yielder) {
     const { readable, writable } = new TransformStream();
-    // We use the existing TarWriter class to generate the stream on the fly
+    // Generate stream on the fly
     const tar = new TarWriter(writable, yielder);
 
     (async () => {
@@ -2238,10 +2243,13 @@
         const stream = folderToTarStream(handle, yielder);
         return await runImport(stream);
       } catch (e) {
-        if (e.name === "AbortError") return; // User cancelled
-        // If it fails (security, etc), fall through to legacy
+        if (e.name === "AbortError") {
+          logger("User cancelled the directory picker.");
+          return; // User cancelled
+        }
+        logger("Directory Picker failed, falling back to legacy input.");
         console.warn(
-          "Directory Picker failed, falling back to legacy input",
+          "Directory Picker failed, falling back to legacy input.",
           e,
         );
       }
