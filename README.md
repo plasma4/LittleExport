@@ -1,6 +1,6 @@
 # LittleExport
 
-A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). File size is just under 50KB. Supports:
+A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). File size when compressed under 50KB. Supports:
 
 - Cookies
 - localStorage
@@ -24,7 +24,8 @@ Example usage:
 await LittleExport.exportData({
     "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will always be created instead; use in conjunction with onsuccess.
     "password": "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
-    "graceful": true, // Gracefully handles errors like IndexedDB locks. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
+    "graceful": true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
+    "fileName": "a", // Turns into a.enc/a.tar.gz, unless a "." is found in the file name already.
 
     // What to export
     "cookies": true, // Note: any value that is !== false is considered "true" by LittleExport.
@@ -64,7 +65,8 @@ await LittleExport.exportData({
     "exclude": {
         // Same options as "include" (see above), but acts as a blacklist instead of a whitelist
     },
-
+    "encoder": new CBOR.Encoder(), // You'll want to adjust this with documentation from https://github.com/kriszyp/cbor-x/. Please also check the default CBOR.Encoder/Decoder in LittleExport settings; this is because disabling things like structuredClone/messing with certain settings might result in problems. You can provide an entirely separate encoder/decoder function if you wish (such as the unsafeObjectToReadableJS function).
+    /* "cborOptions": { "bundleStrings": false } // A simpler way to customize/override encoder settings if you don't specify and need a custom encoder function. */
 
     "customItems": [
         { path: "config.json", data: { theme: "dark", user: "123" } }, // Objects are auto-converted to JSON
@@ -80,14 +82,16 @@ await LittleExport.exportData({
         // Only called if download: false.
         // Use this to manually trigger a download or upload the blob elsewhere.
         console.log("Blob created:", blobUrl);
+        // The onsuccess call does not revote the object URL for you afterwards, so do that here:
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     }
     "logger": console.log // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
 })
 
 await LittleExport.importData({
-    "source": "URL", // Supports blob or HTTPS link.
+    "source": "URL", // Supports blob or HTTPS link. Note you'll need to make sure to add https:// to the start and fully format the link.
     "password": "my-password", // If not included, a prompt() will be generated if the file is encrypted.
-    "graceful": true, // Gracefully handles errors like IndexedDB locks. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
+    "graceful": true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
 
     // What to import/restore, if included in the .tar.gz file. All default to true.
     "cookies": true,
@@ -102,12 +106,14 @@ await LittleExport.importData({
     },
     "exclude": {
         // Same as "include", but acts as a blacklist instead of a whitelist
-    }
+    },
+    "decoder": new CBOR.Decoder(), // See function above for more details (in the "encoder" section).
+    /* "cborOptions": { "bundleStrings": false } // A simpler way to customize/override encoder settings if you don't specify and need a custom encoder function. */
 
     "onerror": function () {
         // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
     },
-    // No onsuccess.
+    // No onsuccess function for importData.
 
     "logger": console.log, // A function for logging. By default, an empty function is used.
     "onCustomItem": async (path, data) => {
@@ -128,7 +134,7 @@ LittleExport supports two modes for importing/exporting:
 
 If an `onVisit` function is passed then recursive crawling will be used; simple is the default. The `include`/`exclude` parameters will be ignored with recursive crawling.
 
-Recursive crawling requires an `onVisit` function that returns one of four possible values: `SKIP`, `PROCESS`, `TRUST`, and `STOP`. `SKIP` means to not process an item (and its children if necessary), `PROCESS` processes the current item, `TRUST` processes the current item and everything inside it, while `STOP` immediately aborts. The `onVisit` function can also return a promise to be async; if a promise is returned then an `await` is created. For example, it is possible to `TRUST` localStorage but add more granular options for `OPFS`.
+Recursive crawling requires an `onVisit` function that returns one of four possible values: `SKIP`, `PROCESS`, `TRUST`, and `ABORT`. `SKIP` means to not process an item (and its children if necessary), `PROCESS` processes the current item, `TRUST` processes the current item and everything inside it, while `ABORT` immediately aborts. The `onVisit` function can also return a promise to be async; if a promise is returned then an `await` is created. For example, it is possible to `TRUST` localStorage but add more granular options for `OPFS`.
 
 Usage of the `await` feature can allow you to "query" the user live on if something shold be exported! Also, `onVisit` is called _before_ any exporting happens, making it possible to modify values right before being exported, or even destroy data before `SKIP`ping.
 
@@ -141,6 +147,7 @@ await LittleExport.exportData({
   // ... include other arguments if needed: source/onCustomItem for importData, customItems/onsuccess for exportData, as well as download, password, graceful, logSpeed, onerror, and logger
   // Note how the function isn't async, see the comment above the askUser call later.
   onVisit: (type, path, meta) => {
+    let DECISION = LittleExport.DECISION;
     // Possible types: OPFS (1), IDB (2), LS (4), SS (8), COOKIE (16), CACHE (32)
     if (userAborted) {
       return DECISION.ABORT; // Immediately stop exporting and clean-up. Note that onerror is not called if LittleExport is aborted by the return of ABORT. The type order in the comment above represents what order categories will be exported in, if that detail matters.
@@ -330,9 +337,11 @@ LittleExport aims to be the standard for full web data export.
 
 The file format specification is as follows:
 
-1.  **Archive Format:** GZIP-compressed USTAR `.tar` (typically `.tar.gz`).
+1.  **Archive Format:** GZIP-compressed POSIX.1-2001 (PAX) / USTAR.
+    - **PaxHeaders:** `PaxHeaders` files or folder names will be ignored. (Normal invisible files that start with a `.` will not.)
+    - **Import Requirement:** Importers MUST support the PAX `x` type flag (ASCII 120) to correctly handle filenames longer than 255 bytes and files larger than ~8.5GB.
 
-2.  **Encryption (Optional):** LittleExport uses 600,000 iterations for encryption using **PBKDF2 (SHA-256)** to derive a 256-bit key for **AES-GCM** encryption. If enabled, the file starts with:
+2.  **Encryption (Optional):** LittleExport uses 600,000 iterations for encryption using **PBKDF2** (SHA-256) to derive a 256-bit key for AES-GCM encryption if a password (of truthy value) is provided. If enabled, the file starts with:
     - `LE_ENC` signature (6 bytes, UTF-8)
     - `Salt` (16 bytes, random)
     - `Verification Block`: An encrypted empty chunk used for password verification
@@ -365,9 +374,7 @@ The file format specification is as follows:
       ```
     - **Import Requirement:** Importers MUST extract `data/blobs/` to temporary storage (e.g., `.rfs_temp_blobs` in OPFS) before processing IDB records, then clean up after import completes
 
-5.  **CBOR Encoding:** IndexedDB records and Cache entries use CBOR for type preservation. Special markers:
-    - `__le_blob_ref`: External blob reference (see above)
-    - `__le_circular`: Indicates a circular reference that was pruned
+5.  **CBOR Encoding:** IndexedDB records and Cache entries use CBOR for type preservation. See the section below for differences.
 
 6.  **Cache Storage Format:** Each cached response is stored as CBOR with:
 
@@ -382,13 +389,18 @@ The file format specification is as follows:
 
 8.  **Path Encoding:** Database names, store names, and cache names are URL-encoded in file paths using `encodeURIComponent()`.
 
+## Standardization Differences in CBOR
+
+LittleExport uses a custom implementation of CBOR that can handle circular references, `Blobs`, and sparse arrays, along with the base `cbor-x` library. `cbor-x` itself has a few specific handling edge cases such as replacing `__proto__` with `__proto_` for security reasons. LittleExport exposes `prepForCBOR`/`restoreFromCBOR` and will use custom functions if you choose to modify `LittleExport.prepForCBOR`, for example. You can also specify a custom encoder/decoder (see more details in the Usage and Building section), or even try `unsafeObjectToReadableJS` for custom encoding.
+
 ## Limitations
 
 - URL Persistence **MUST** be done by modifying the code beforehand or dynamically modifying source code with regexes (see RuntimeFS for an example).
 - LittleExport is more likely to crash when streaming is not supported (no `showSaveFilePicker` support), but should be able to handle a few hundred MB of data in all browsers. All other features should have Baseline support. In the future, non-Chromium browsers might adopt parts of the File System API that allow for streamed exports.
-- Crashes may occur with extremely large individual Blobs in IndexedDB.
 - LittleExport is not fully/always ACID compliant. Ideally, stop anything that could influence export results before using the tool.
-- Theoretically, a giant single IndexedDB record or USTAR limitations (like very long file names or files over 8.5GB) will prevent data from being exportable.
+- Cookies do not store timestamp; they only store the `key=value` part, so metadata like `path` is ignored.
+- LittleExport should be able to handle export sizes well above 5-10GB given enough streaming and memory; however, storing extremely object/string data like single IndexedDB records without using a `Blob` may cause issues. You can use a cbor-x `decoder` object when decoding, and customize its limits through `decoder.setSizeLimits()`, to try to prevent these problems; see [here](https://github.com/kriszyp/cbor-x/) for CBOR documentation.
+- Not having enough memory on-device will result in a `QuotaExceededError`.
 - Importing data effectively gives the backup file root access to your application's state, and may even control caches. Be careful!
 
 ## Future
