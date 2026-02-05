@@ -1,4 +1,4 @@
-// Meant as an optional replacement for .cbor to instead get human-readable JS data. You may want to use something more battle-tested you may want to use something like https://github.com/yahoo/serialize-javascript. (Note that serialize-javascript doesn't support things like binary data, blobs, or circular references.)
+// Meant as a testing replacement for .cbor to instead get human-readable JS data. You may want to use something more battle-tested instead, like https://github.com/yahoo/serialize-javascript. (Note that serialize-javascript doesn't support things like binary data, blobs, or circular references.)
 /**
  * Serializes an object into a string of executable JavaScript (IIFE).
  * Handles circular references, sparse arrays, and typed arrays. (Works on `globalThis`!) May have security issues when the result is eval-ed; meant for readability and not necessarily robust.
@@ -109,7 +109,6 @@ async function unsafeObjectToReadableJS(obj, variablePrefix = "r") {
 
     const tag = getTypeTag(curr);
 
-    // Handle Blobs async (Universal support)
     if (
       (tag === "[object Blob]" || tag === "[object File]") &&
       !blobs.has(curr)
@@ -140,9 +139,6 @@ async function unsafeObjectToReadableJS(obj, variablePrefix = "r") {
       );
     }
 
-    // Traverse children
-    // We add try-catch here too, just in case 'curr' is a weird Proxy or Host Object
-    // that throws on key access.
     try {
       if (Array.isArray(curr)) {
         const keys = Reflect.ownKeys(curr);
@@ -384,10 +380,6 @@ async function unsafeObjectToReadableJS(obj, variablePrefix = "r") {
       if (tag === "[object Error]" && (k === "message" || k === "name"))
         continue;
       if (k === "prototype" && tag === "[object Function]") continue;
-
-      // FIX: Try-catch is essential here for DOM objects (window, location, etc.)
-      // Accessing 'val[k]' where k is a native getter (like 'localStorage')
-      // on a prototype object (like Window.prototype) causes "Illegal invocation".
       let propValue;
       try {
         propValue = val[k];
@@ -413,7 +405,6 @@ async function unsafeObjectToReadableJS(obj, variablePrefix = "r") {
   }
 
   const rootResult = gen(obj, 0);
-
   for (let i = 0; i < populationQueue.length; i++) {
     const task = populationQueue[i];
     populate(task.val, task.id, task.tag);
