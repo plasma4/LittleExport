@@ -1,6 +1,6 @@
 # LittleExport
 
-A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). File size when compressed under 50KB. Supports:
+A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). File size when compressed is under 80KB. Supports:
 
 - Cookies
 - localStorage
@@ -20,15 +20,15 @@ Use `little-export.min.js`. To build the minified code, use [JSCompress](https:/
 Example usage:
 
 ```js
-// All object properties are optional. All boolean properties are assumed to be true if not specified.
+// All object properties are optional. All boolean properties are assumed to be true if not specified. Note: any boolean that is !== false is considered "true" by LittleExport.
 await LittleExport.exportData({
-    "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will always be created instead; use in conjunction with onsuccess.
+    "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will be returned if successful. The blob's object URL will not be revoked to make sure to call URL.revokeObjectURL once complete.
     "password": "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
     "graceful": true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
-    "fileName": "a", // Turns into a.enc/a.tar.gz, unless a "." is found in the file name already.
+    "fileName": "a", // Turns into a.tar.gz/a.enc (depending if password is provided or not), unless a "." character is in the file name already.
 
     // What to export
-    "cookies": true, // Note: any value that is !== false is considered "true" by LittleExport.
+    "cookies": true,
     "localStorage": true,
     "idb": true,
     "opfs": true,
@@ -78,13 +78,6 @@ await LittleExport.exportData({
     "onerror": function (err) {
         // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
     },
-    "onsuccess": (blobUrl) => {
-        // Only called if download: false.
-        // Use this to manually trigger a download or upload the blob elsewhere.
-        console.log("Blob created:", blobUrl);
-        // The onsuccess call does not revote the object URL for you afterwards, so do that here:
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    }
     "logger": console.log // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
 })
 
@@ -113,7 +106,6 @@ await LittleExport.importData({
     "onerror": function () {
         // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
     },
-    // No onsuccess function for importData.
 
     "logger": console.log, // A function for logging. By default, an empty function is used.
     "onCustomItem": async (path, data) => {
@@ -123,6 +115,17 @@ await LittleExport.importData({
         }
     }
 })
+
+// Clear data. Defaults to clearing everything if an empty object or no argument is provided. (If you need a more granular method for deleting data, it's best to implement it yourself.)
+// For clearing data specifically, booleans are considered booleans if they are truthy, not !== false.
+await LittleExport.clearData({
+  opfs: true,
+  idb: true,
+  localStorage: true,
+  session: true,
+  cookies: true, // Note that cookie logic is not guaranteed to clear all custom paths. Check the logic in the code and use a custom implementation if necessary.
+  cache: true,
+});
 ```
 
 ## Modes
@@ -144,8 +147,8 @@ const { TYPE, DECISION } = LittleExport;
 
 // onVisit acts the same with importData. Note that LittleExport attempts to minimize the amount of calls to onVisit; this means it will entirely skip asking for a category if importData's file doesn't include any data for said category.
 await LittleExport.exportData({
-  // ... include other arguments if needed: source/onCustomItem for importData, customItems/onsuccess for exportData, as well as download, password, graceful, logSpeed, onerror, and logger
-  // Note how the function isn't async, see the comment above the askUser call later.
+  // ... include other arguments if needed such as download, password, etc.
+  // Note how the onVisit function isn't async, see the comment for askUser later.
   onVisit: (type, path, meta) => {
     let DECISION = LittleExport.DECISION;
     // Possible types: OPFS (1), IDB (2), LS (4), SS (8), COOKIE (16), CACHE (32)
@@ -398,7 +401,7 @@ LittleExport uses a custom implementation of CBOR that can handle circular refer
 - URL Persistence **MUST** be done by modifying the code beforehand or dynamically modifying source code with regexes (see RuntimeFS for an example).
 - LittleExport is more likely to crash when streaming is not supported (no `showSaveFilePicker` support), but should be able to handle a few hundred MB of data in all browsers. All other features should have Baseline support. In the future, non-Chromium browsers might adopt parts of the File System API that allow for streamed exports.
 - LittleExport is not fully/always ACID compliant. Ideally, stop anything that could influence export results before using the tool.
-- Cookies do not store timestamp; they only store the `key=value` part, so metadata like `path` is ignored.
+- Cookies do not store timestamp; they only store the `key=value` part, so metadata like `path` is ignored. `HttpOnly` cookies cannot be exported.
 - LittleExport should be able to handle export sizes well above 5-10GB given enough streaming and memory; however, storing extremely object/string data like single IndexedDB records without using a `Blob` may cause issues. You can use a cbor-x `decoder` object when decoding, and customize its limits through `decoder.setSizeLimits()`, to try to prevent these problems; see [here](https://github.com/kriszyp/cbor-x/) for CBOR documentation.
 - Not having enough memory on-device will result in a `QuotaExceededError`.
 - Importing data effectively gives the backup file root access to your application's state, and may even control caches. Be careful!
