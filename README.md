@@ -22,99 +22,107 @@ Example usage:
 ```js
 // All object properties are optional. All boolean properties are assumed to be true if not specified. Note: any boolean that is !== false is considered "true" by LittleExport.
 await LittleExport.exportData({
-    "download": true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will be returned if successful. The blob's object URL will not be revoked to make sure to call URL.revokeObjectURL once complete.
-    "password": "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
-    "graceful": true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
-    "fileName": "a", // Turns into a.tar.gz/a.enc (depending if password is provided or not), unless a "." character is in the file name already.
+  download: true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will be returned if successful. The blob's object URL will not be revoked to make sure to call URL.revokeObjectURL once complete.
+  password: "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
+  graceful: true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
+  fileName: "a", // Turns into a.tar.gz/a.enc (depending if password is provided or not), unless a "." character is in the file name already.
+  cborExtensionName: "cbor", // Defaults to cbor but can be customized if you exported with a custom extension name.
 
-    // What to export
-    "cookies": true,
-    "localStorage": true,
-    "idb": true,
-    "opfs": true,
-    "cache": true,
-    "session": true,
-    "logSpeed": 100, // Defaults to 100; meant for UI logging.
-    "include": {
-        "localStorage": ["settings", "user_"], // Matches "settings", "user_id", but NOT "user_name"
+  // What to export (keep in mind not specifying a property will make it be considered as true)
+  cookies: true,
+  localStorage: true,
+  idb: true,
+  opfs: true,
+  cache: true,
+  session: true,
+  logSpeed: 100, // Defaults to 100; meant for UI logging.
+  include: {
+    localStorage: ["settings", "user_"], // Matches "user_" but NOT "user_name"
 
-        // For the Origin Private File System: the path argument is the relative file path, such as "Logs/2023/error.txt"
-        "opfs": (path) => {
-            // Only export files inside a "Saves" folder
-            // Note: Filtering a folder automatically includes/excludes all its children!
-            return path.startsWith("Saves/");
-        },
-
-        // IndexedDB
-        // The path argument is the logical name of the DB/store, such as "DatabaseName" OR "DatabaseName/StoreName"
-        "idb": (path) => {
-            if (path === "MyDB") return true;
-            // If the DB is allowed, the function is called again for every Object Store.
-            // The format is "DB/Store".
-
-            // Example: Exclude the "Cache" store in "MyGameDB"
-            if (path === "MyGameDB/Cache") return false;
-
-            // Note how slashes are preserved
-            if (path === "/idbfs") return true; // Allow the Emscripten DB
-            if (path.startsWith("/idbfs/")) return true; // Allow all its stores
-
-            return false;
-        }
-    }
-    "exclude": {
-        // Same options as "include" (see above), but acts as a blacklist instead of a whitelist
+    // For the Origin Private File System: the path argument is the relative file path, such as "Logs/2023/error.txt"
+    opfs: (path) => {
+      // Only export files inside a "Saves" folder
+      // Note: Filtering a folder automatically includes/excludes all its children!
+      return path.startsWith("Saves/");
     },
-    "encoder": new CBOR.Encoder(), // You'll want to adjust this with documentation from https://github.com/kriszyp/cbor-x/. Please also check the default CBOR.Encoder/Decoder in LittleExport settings; this is because disabling things like structuredClone/messing with certain settings might result in problems. You can provide an entirely separate encoder/decoder function if you wish (such as the unsafeObjectToReadableJS function).
-    /* "cborOptions": { "bundleStrings": false } // A simpler way to customize/override encoder settings if you don't specify and need a custom encoder function. */
 
-    "customItems": [
-        { path: "config.json", data: { theme: "dark", user: "123" } }, // Objects are auto-converted to JSON
-        { path: "notes.txt", data: "Hello World" },                    // Strings are saved as text files
-        { path: "profile.png", data: blobObj }                         // Blobs are streamed directly
-    ],
+    // IndexedDB
+    // The path argument is the logical name of the DB/store, such as "DatabaseName" OR "DatabaseName/StoreName"
+    idb: (path) => {
+      if (path === "MyDB") return true;
+      // If the DB is allowed, the function is called again for every Object Store.
+      // The format is "DB/Store".
 
+      // Example: Exclude the "Cache" store in "MyGameDB"
+      if (path === "MyGameDB/Cache") return false;
 
-    "onerror": function (err) {
-        // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
+      // Note how slashes are preserved
+      if (path === "/idbfs") return true; // Allow the Emscripten DB
+      if (path.startsWith("/idbfs/")) return true; // Allow all its stores
+
+      return false;
     },
-    "logger": console.log // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
-})
+  },
+  exclude: {
+    // Same options as "include" (see above), but acts as a blacklist instead of a whitelist
+  },
+  encoder: new CBOR.Encoder(), // You'll want to adjust this with documentation from https://github.com/kriszyp/cbor-x/. Please also check the default CBOR.Encoder/Decoder in LittleExport settings; this is because disabling things like structuredClone/messing with certain settings might result in problems. You can provide an entirely separate encoder/decoder function if you wish (such as the unsafeObjectToReadableJS function).
+  /* "cborOptions": { "bundleStrings": false } // A simpler way to customize/override encoder settings if you don't specify and need a custom encoder function. */
 
+  customItems: [
+    { path: "config.json", data: { theme: "dark", user: "123" } }, // Objects are auto-converted to JSON
+    { path: "notes.txt", data: "Hello World" }, // Strings are saved as text files
+    { path: "profile.png", data: blobObj }, // Blobs are streamed directly
+  ],
+
+  onerror: function (err) {
+    // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
+  },
+  logger: console.log, // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
+});
+
+// All properties except for "source" are optional. Boolean properties are also assumed to be true if the value is !== false with importing.
 await LittleExport.importData({
-    "source": "URL", // Supports blob or HTTPS link. Note you'll need to make sure to add https:// to the start and fully format the link.
-    "password": "my-password", // If not included, a prompt() will be generated if the file is encrypted.
-    "graceful": true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
+  source: "URL", // Supports blob or HTTPS link. Note you'll need to make sure to add https:// to the start and fully format the link.
+  fetchInit: {}, // What to pass to the second argument of fetch() (optional, only used if source is a URL).
+  password: "my-password", // If not included, a prompt() will be generated if the file is encrypted. Set password to null to error without prompting instead.
+  graceful: true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
+  verifyFile: true, // Set to false to ignore checksum problems and EOF checks.
 
-    // What to import/restore, if included in the .tar.gz file. All default to true.
-    "cookies": true,
-    "localStorage": true,
-    "idb": true,
-    "opfs": true,
-    "cache": true,
-    "session": true,
-    "logSpeed": 100, // Defaults to 100; meant for UI logging. For importing, this also acts as the minimum amount of time between UI updates.
-    "include": {
-        "localStorage": ["key1", "key2"], // Same as exportData, see function above for more.
-    },
-    "exclude": {
-        // Same as "include", but acts as a blacklist instead of a whitelist
-    },
-    "decoder": new CBOR.Decoder(), // See function above for more details (in the "encoder" section).
-    /* "cborOptions": { "bundleStrings": false } // A simpler way to customize/override encoder settings if you don't specify and need a custom encoder function. */
+  // What to import/restore, if included in the .tar.gz file. All default to true.
+  cookies: true,
+  localStorage: true,
+  idb: true,
+  opfs: true,
+  cache: true,
+  session: true,
+  logSpeed: 100, // Defaults to 100; meant for UI logging. For importing, this also acts as the minimum amount of time between UI updates.
+  include: {
+    localStorage: ["key1", "key2"], // Same as exportData, see function above for more.
+  },
+  exclude: {
+    // Same as "include", but acts as a blacklist instead of a whitelist
+  },
+  decoder: new CBOR.Decoder(), // See function above for more details (in the "encoder" section).
+  /* "cborOptions": { "bundleStrings": false } // A simpler way to customize/override encoder settings if you don't specify and need a custom encoder function. */
 
-    "onerror": function () {
-        // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
-    },
+  onerror: function () {
+    // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
+  },
 
-    "logger": console.log, // A function for logging. By default, an empty function is used.
-    "onCustomItem": async (path, data) => {
-        if (path === "meta.json") { // Do custom stuff with custom data
-            const str = new TextDecoder().decode(data);
-            console.log(JSON.parse(str));
-        }
+  logger: console.log, // A function for logging. By default, an empty function is used.
+  onCustomItem: async (path, data) => {
+    if (path === "meta.json") {
+      // Do custom stuff with custom data
+      const str = new TextDecoder().decode(data);
+      console.log(JSON.parse(str));
     }
-})
+  },
+});
+
+LittleExport.importFromFolder({
+  // All the same arguments as .importData except for "source" (LittleExport will automatically ask the user for a folder.)
+});
 
 // Clear data. Defaults to clearing everything if an empty object or no argument is provided. (If you need a more granular method for deleting data, it's best to implement it yourself.)
 // For clearing data specifically, booleans are considered booleans if they are truthy, not !== false.
@@ -126,6 +134,8 @@ await LittleExport.clearData({
   cookies: true, // Note that cookie logic is not guaranteed to clear all custom paths. Check the logic in the code and use a custom implementation if necessary.
   cache: true,
 });
+
+LittleExport.warn = () => {}; // You can provide a custom warn function; this defaults to console.warn if not set.
 ```
 
 ## Modes
@@ -394,7 +404,11 @@ The file format specification is as follows:
 
 ## Standardization Differences in CBOR
 
-LittleExport uses a custom implementation of CBOR that can handle circular references, `Blobs`, and sparse arrays, along with the base `cbor-x` library. `cbor-x` itself has a few specific handling edge cases such as replacing `__proto__` with `__proto_` for security reasons. LittleExport exposes `prepForCBOR`/`restoreFromCBOR` and will use custom functions if you choose to modify `LittleExport.prepForCBOR`, for example. You can also specify a custom encoder/decoder (see more details in the Usage and Building section), or even try `unsafeObjectToReadableJS` for custom encoding.
+LittleExport uses a custom implementation of CBOR that can handle circular references, `Blobs`, and sparse arrays, along with the base `cbor-x` library. `cbor-x` itself has a few specific handling edge cases such as replacing `__proto__` with `__proto_` for security reasons.
+
+LittleExport exposes `prepForCBOR`/`restoreFromCBOR` to let you modify these with custom functions as necessary.
+
+You can also specify a custom encoder/decoder (see more details in the Usage and Building section), or even try `unsafeObjectToReadableJS` in objectToReadable.js for custom encoding.
 
 ## Limitations
 
