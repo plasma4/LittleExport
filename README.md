@@ -79,7 +79,7 @@ await LittleExport.exportData({
   onerror: function (err) {
     // If the import fails (such as due to IndexedDB locks). In some cases, onerror will be called while execution continues such as IndexedDB locking; set graceful to false to prevent this.
   },
-  logger: console.log, // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
+  logger: console.log, // A function for logging (exactly 1 string will always be passed in). By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
 });
 
 // All properties are optional. Boolean properties are also assumed to be true if the value is !== false with importing.
