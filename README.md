@@ -1,6 +1,6 @@
 # LittleExport
 
-A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). File size when compressed is under 80KB. Supports:
+A tiny, customizable JS tool that scrapes specified client-side storage types and keys and converts it to a readable `.tar.gz` file, designed for complex apps like Unity and used in [RuntimeFS](https://github.com/plasma4/RuntimeFS). Compressed file size is under 100KB! Supports:
 
 - Cookies
 - localStorage
@@ -22,7 +22,7 @@ Example usage:
 ```js
 // All object properties are optional. All boolean properties are assumed to be true if not specified. Note: any boolean that is !== false is considered "true" by LittleExport.
 await LittleExport.exportData({
-  download: true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will be returned if successful. The blob's object URL will not be revoked to make sure to call URL.revokeObjectURL once complete.
+  download: true, // Whether to directly download to the device or not. If false, streaming will not occur and a blob will be returned if successful. The blob's object URL will not be revoked, so make sure to call URL.revokeObjectURL once complete.
   password: "my-password", // Optional. If included, the file export type will be .enc instead of .tar.gz.
   graceful: true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
   fileName: "a", // Turns into a.tar.gz/a.enc (depending if password is provided or not), unless a "." character is in the file name already.
@@ -34,9 +34,10 @@ await LittleExport.exportData({
   idb: true,
   opfs: true,
   cache: true,
-  session: true,
+  sessionStorage: true,
   logSpeed: 100, // Defaults to 100; meant for UI logging.
   include: {
+    // Supports: localStorage, session, cookies, opfs, idb, cache
     localStorage: ["settings", "user_"], // Matches "user_" but NOT "user_name"
 
     // For the Origin Private File System: the path argument is the relative file path, such as "Logs/2023/error.txt"
@@ -81,9 +82,9 @@ await LittleExport.exportData({
   logger: console.log, // A function for logging. By default, an empty function is used. It's advised to NOT use the DevTools logger as upwards of 10 logs/second can consistently be created; updating an HTML element instead is probably a better approach.
 });
 
-// All properties except for "source" are optional. Boolean properties are also assumed to be true if the value is !== false with importing.
+// All properties are optional. Boolean properties are also assumed to be true if the value is !== false with importing.
 await LittleExport.importData({
-  source: "URL", // Supports blob or HTTPS link. Note you'll need to make sure to add https:// to the start and fully format the link.
+  source: "URL", // Supports blob, HTTPS link, or object with a .stream() method (such as a File). Note you'll need to make sure to add https:// to the start and fully format the link. If no source is provided, LittleExport will prompt for a file.
   fetchInit: {}, // What to pass to the second argument of fetch() (optional, only used if source is a URL).
   password: "my-password", // If not included, a prompt() will be generated if the file is encrypted. Set password to null to error without prompting instead.
   graceful: true, // Gracefully handles ALL errors by calling onerror instead of actually erroring. Note that onerror will still produce errors for issues such as IndexedDB locking, but will continue execution.
@@ -95,7 +96,7 @@ await LittleExport.importData({
   idb: true,
   opfs: true,
   cache: true,
-  session: true,
+  sessionStorage: true,
   logSpeed: 100, // Defaults to 100; meant for UI logging. For importing, this also acts as the minimum amount of time between UI updates.
   include: {
     localStorage: ["key1", "key2"], // Same as exportData, see function above for more.
@@ -113,7 +114,7 @@ await LittleExport.importData({
   logger: console.log, // A function for logging. By default, an empty function is used.
   onCustomItem: async (path, data) => {
     if (path === "meta.json") {
-      // Do custom stuff with custom data
+      // Do custom stuff with custom data (Uint8Array).
       const str = new TextDecoder().decode(data);
       console.log(JSON.parse(str));
     }
@@ -121,7 +122,7 @@ await LittleExport.importData({
 });
 
 LittleExport.importFromFolder({
-  // All the same arguments as .importData except for "source" (LittleExport will automatically ask the user for a folder.)
+  // All the same arguments as .importData except for "source" (LittleExport will automatically ask the user for a folder.) Check code for more argument options.
 });
 
 // Clear data. Defaults to clearing everything if an empty object or no argument is provided. (If you need a more granular method for deleting data, it's best to implement it yourself.)
@@ -130,12 +131,12 @@ await LittleExport.clearData({
   opfs: true,
   idb: true,
   localStorage: true,
-  session: true,
+  sessionStorage: true,
   cookies: true, // Note that cookie logic is not guaranteed to clear all custom paths. Check the logic in the code and use a custom implementation if necessary.
   cache: true,
 });
 
-LittleExport.warn = () => {}; // You can provide a custom warn function; this defaults to console.warn if not set.
+LittleExport.warn = (text, error) => {}; // You can provide a custom warn function; this defaults to console.warn if not set. There will sometimes be an additional second argument that provides the error object.
 ```
 
 ## Modes
