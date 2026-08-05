@@ -37,6 +37,12 @@
   const ENC = new TextEncoder();
   const DEC = new TextDecoder("utf-8", { fatal: false });
 
+  // A blob at or below this size goes in the CBOR record. A larger blob gets its own archive entry and stays in a stream, thus the memory use does not increase with the size of the blob. Set inlineBlobLimit in the options to change this value.
+  const INLINE_BLOB_LIMIT = 8388608; // 8 MiB
+  // The memory fallback collects the archive in Blob parts of this size. The browser can put Blob data on the disk, but a JS array stays in the heap.
+  const BLOB_PART_SIZE = 8388608; // 8 MiB
+  let blobIdCounter = 0;
+
   async function deriveKey(password, salt) {
     const km = await crypto.subtle.importKey(
       "raw",
@@ -191,28 +197,61 @@
     return res;
   }
 
-  // Walk a value and put the bytes of each blob in its holder. This is the only step that waits.
-  async function prepareForCBOR(item) {
+  // Walk a value, then give each blob its final form. A small blob keeps its bytes in the record. A large blob becomes a reference, and the caller must write it to the archive before the record.
+  // Gives { value, external }, where external holds the large blobs to write.
+  async function prepareForCBOR(item, inlineLimit = INLINE_BLOB_LIMIT) {
     const pendingBlobs = [];
-    const clean = LittleExport.prepForCBOR(item, pendingBlobs);
+    const value = LittleExport.prepForCBOR(item, pendingBlobs);
+    const external = [];
+    const inline = [];
 
-    if (pendingBlobs.length > 0) {
-      const buffers = await Promise.all(
-        pendingBlobs.map((p) => p.blob.arrayBuffer()),
-      );
-      for (let i = 0; i < pendingBlobs.length; i++) {
-        pendingBlobs[i].ref.__le_blob = new Uint8Array(buffers[i]);
+    for (const p of pendingBlobs) {
+      if (p.blob.size <= inlineLimit) {
+        inline.push(p);
+      } else {
+        const id = (blobIdCounter++).toString(36);
+        delete p.ref.__le_blob;
+        p.ref.__le_blob_ref = id;
+        p.ref.size = p.blob.size;
+        external.push({ id, blob: p.blob });
       }
     }
 
-    return clean;
+    // Read the small blobs together. Only these blobs come into memory.
+    if (inline.length > 0) {
+      const buffers = await Promise.all(
+        inline.map((p) => p.blob.arrayBuffer()),
+      );
+      for (let i = 0; i < inline.length; i++) {
+        inline[i].ref.__le_blob = new Uint8Array(buffers[i]);
+      }
+    }
+
+    return { value, external };
   }
 
-  // The bytes are in the record, thus no file access is necessary and this function stays synchronous.
+  // This function stays synchronous. The small blobs are in the record, and the importer opens the large blobs before it calls this function. blobStore maps an ID to a File on the disk.
   // The seen map keeps circular data safe. Put each new container in the map before you fill it.
-  function restoreFromCBOR(item, seen = new WeakMap()) {
+  function restoreFromCBOR(item, blobStore = null, seen = new WeakMap()) {
     if (!item || typeof item !== "object") return item;
     if (seen.has(item)) return seen.get(item);
+
+    // A large blob stays on the disk. A slice of a File makes no copy of the bytes.
+    if (item.__le_blob_ref !== undefined) {
+      const source = blobStore ? blobStore.get(item.__le_blob_ref) : null;
+      if (!source) return null;
+
+      const part = source.slice(0, source.size, item.type);
+      const out =
+        item.name !== undefined
+          ? new File([part], item.name, {
+              type: item.type,
+              lastModified: item.lastModified,
+            })
+          : part;
+      seen.set(item, out);
+      return out;
+    }
 
     if (item.__le_blob !== undefined) {
       const bytes = item.__le_blob || new Uint8Array(0);
@@ -231,7 +270,7 @@
       const arr = new Array(item.length);
       seen.set(item, arr);
       for (const k in item.data) {
-        arr[k] = LittleExport.restoreFromCBOR(item.data[k], seen);
+        arr[k] = LittleExport.restoreFromCBOR(item.data[k], blobStore, seen);
       }
       return arr;
     }
@@ -240,7 +279,7 @@
       const res = new Array(item.length);
       seen.set(item, res);
       for (let i = 0; i < item.length; i++) {
-        res[i] = LittleExport.restoreFromCBOR(item[i], seen);
+        res[i] = LittleExport.restoreFromCBOR(item[i], blobStore, seen);
       }
       return res;
     }
@@ -251,8 +290,8 @@
       seen.set(item, res);
       for (const [k, v] of item) {
         res.set(
-          LittleExport.restoreFromCBOR(k, seen),
-          LittleExport.restoreFromCBOR(v, seen),
+          LittleExport.restoreFromCBOR(k, blobStore, seen),
+          LittleExport.restoreFromCBOR(v, blobStore, seen),
         );
       }
       return res;
@@ -262,7 +301,7 @@
       const res = new Set();
       seen.set(item, res);
       for (const v of item) {
-        res.add(LittleExport.restoreFromCBOR(v, seen));
+        res.add(LittleExport.restoreFromCBOR(v, blobStore, seen));
       }
       return res;
     }
@@ -271,7 +310,7 @@
       const n = {};
       seen.set(item, n);
       for (const k in item) {
-        n[k] = LittleExport.restoreFromCBOR(item[k], seen);
+        n[k] = LittleExport.restoreFromCBOR(item[k], blobStore, seen);
       }
       return n;
     }
@@ -386,6 +425,7 @@
       this.yielder = yielder;
       this.pos = 0;
       this.time = Math.floor(Date.now() / 1000);
+      this.paxCounter = 0;
       this.buffer = new Uint8Array(TAR_BUFFER_SIZE);
       this.bufferOffset = 0;
     }
@@ -447,8 +487,8 @@
 
       if (needsPax) {
         const paxData = createPaxData(path, size); // Already handles encoding internally
-        const safePaxName =
-          "PaxHeaders/" + (path.length > 50 ? path.slice(0, 50) : path);
+        // Readers do not use the name of a PAX header. A counter keeps the name short ASCII, thus a long name with multibyte characters cannot be cut in the middle of a character.
+        const safePaxName = "PaxHeaders/" + this.paxCounter++;
 
         await this.write(
           createTarHeader(safePaxName, paxData.length, this.time, "x"),
@@ -479,8 +519,8 @@
 
       if (needsPax) {
         const paxData = createPaxData(path, 0);
-        const safePaxName =
-          "PaxHeaders/" + (path.length > 50 ? path.slice(0, 50) : path);
+        // Readers do not use the name of a PAX header. A counter keeps the name short ASCII, thus a long name with multibyte characters cannot be cut in the middle of a character.
+        const safePaxName = "PaxHeaders/" + this.paxCounter++;
         await this.write(
           createTarHeader(safePaxName, paxData.length, this.time, "x"),
         );
@@ -850,6 +890,7 @@
 
   async function exportData(config = {}) {
     const CBOR = window.CBOR;
+    blobIdCounter = 0;
 
     // Check the LittleExport docs on all the options.
     const opts = {
@@ -861,6 +902,11 @@
       cborExtensionName: "cbor",
       ...config,
     };
+
+    const inlineBlobLimit =
+      opts.inlineBlobLimit === undefined
+        ? INLINE_BLOB_LIMIT
+        : opts.inlineBlobLimit;
 
     const encoder =
       opts.encoder ||
@@ -900,8 +946,18 @@
 
     const status = { category: "", detail: "" };
 
-    let outputStream,
-      chunks = [];
+    let outputStream;
+
+    // The memory fallback collects the archive in Blob parts. The bytes then leave the JS heap, and the browser can put them on the disk.
+    const blobParts = [];
+    let pendingParts = [];
+    let pendingPartsSize = 0;
+    const flushParts = () => {
+      if (pendingParts.length === 0) return;
+      blobParts.push(new Blob(pendingParts));
+      pendingParts = [];
+      pendingPartsSize = 0;
+    };
 
     let fileName = opts.fileName.includes(".")
       ? opts.fileName
@@ -925,9 +981,13 @@
     if (!outputStream) {
       outputStream = new WritableStream({
         write(c) {
-          chunks.push(c);
+          pendingParts.push(c);
+          pendingPartsSize += c.byteLength;
+          if (pendingPartsSize >= BLOB_PART_SIZE) flushParts();
         },
-        close() {},
+        close() {
+          flushParts();
+        },
       });
     }
 
@@ -1261,9 +1321,20 @@
                   if (batch.keys.length > 0) {
                     const processedValues = [];
                     for (let i = 0; i < batch.values.length; i++) {
-                      processedValues.push(
-                        await prepareForCBOR(batch.values[i]),
+                      const prepared = await prepareForCBOR(
+                        batch.values[i],
+                        inlineBlobLimit,
                       );
+                      processedValues.push(prepared.value);
+
+                      // Write each large blob before the record that points to it. The import reads the archive in sequence.
+                      for (const b of prepared.external) {
+                        await tar.writeStream(
+                          `data/blobs/${b.id}`,
+                          b.blob.size,
+                          b.blob.stream(),
+                        );
+                      }
                     }
 
                     await tar.writeEntry(
@@ -1492,9 +1563,17 @@
                 if (!res) continue;
                 const blob = await res.blob();
                 const safeHash = (entryId++).toString(36);
-                const cleanData = await prepareForCBOR(blob);
+                const prepared = await prepareForCBOR(blob, inlineBlobLimit);
 
-                // Write one record that holds the metadata and the body
+                // A large body goes in its own entry, before the record
+                for (const b of prepared.external) {
+                  await tar.writeStream(
+                    `data/blobs/${b.id}`,
+                    b.blob.size,
+                    b.blob.stream(),
+                  );
+                }
+
                 await tar.writeEntry(
                   `data/cache/${encodeURIComponent(cacheName)}/${safeHash}.${cborExtensionName}`,
                   encoder.encode({
@@ -1504,7 +1583,7 @@
                       headers: Object.fromEntries(res.headers),
                       type: blob.type,
                     },
-                    data: cleanData,
+                    data: prepared.value,
                   }),
                 );
               }
@@ -1522,8 +1601,9 @@
 
       let result = null;
 
-      if (chunks.length > 0) {
-        result = new Blob(chunks, { type: "application/octet-stream" });
+      flushParts();
+      if (blobParts.length > 0) {
+        result = new Blob(blobParts, { type: "application/octet-stream" });
       }
 
       if (opts.download !== false) {
@@ -1602,6 +1682,11 @@
     let rootOpfs = null;
     const categoryDecisions = {};
     const trustedPaths = {};
+
+    // Large blobs come as their own entries. The folder is only made if the archive has such an entry.
+    const TEMP_BLOB_DIR = "._littleexport_temp_" + crypto.randomUUID();
+    const blobStore = new Map();
+    let tempBlobDir = null;
 
     function getDecision(type, path, meta) {
       if (!useOnVisit) return DECISION.PROCESS;
@@ -1955,6 +2040,9 @@
         } else if (name.startsWith("opfs/")) {
           status.category = "OPFS";
           status.detail = name.replace("opfs/", "");
+        } else if (name.startsWith("data/blobs/")) {
+          status.category = "Blobs";
+          status.detail = "Large data";
         } else {
           status.category = "Config";
           status.detail = name;
@@ -1970,9 +2058,29 @@
         }
 
         if (name.startsWith("data/")) {
-          // Older archives kept the blobs in their own entries. The bytes are now in the record, thus move across such an entry without a read into memory.
+          // A large blob comes before the record that uses it. Put it on the disk, then open it now so that restoreFromCBOR can stay synchronous.
           if (name.startsWith("data/blobs/")) {
-            await skip(size);
+            const id = name.split("/").pop();
+            let stored = false;
+
+            if (rootOpfs) {
+              await tryGraceful(async () => {
+                if (!tempBlobDir) {
+                  tempBlobDir = await rootOpfs.getDirectoryHandle(
+                    TEMP_BLOB_DIR,
+                    { create: true },
+                  );
+                }
+                const fh = await tempBlobDir.getFileHandle(id, {
+                  create: true,
+                });
+                await streamToWriter(await fh.createWritable(), size);
+                blobStore.set(id, await fh.getFile());
+                stored = true;
+              }, `Blob ${id}`);
+            }
+
+            if (!stored) await skip(size);
             await skip(padding);
             continue;
           } else {
@@ -2173,7 +2281,10 @@
                   continue;
 
                 const decoded = decoder.decode(d);
-                const [keys, values] = LittleExport.restoreFromCBOR(decoded);
+                const [keys, values] = LittleExport.restoreFromCBOR(
+                  decoded,
+                  blobStore,
+                );
 
                 if (!dbCache[dbName]) {
                   const db = await tryGraceful(async () => {
@@ -2238,7 +2349,10 @@
                 await tryGraceful(async () => {
                   const data = decoder.decode(d);
                   const cache = await caches.open(cacheName);
-                  const restoredData = LittleExport.restoreFromCBOR(data.data);
+                  const restoredData = LittleExport.restoreFromCBOR(
+                    data.data,
+                    blobStore,
+                  );
                   const blob =
                     restoredData instanceof Blob
                       ? restoredData
@@ -2319,6 +2433,14 @@
       logger(`Error: ${err.message}`);
       if (opts.onerror) opts.onerror(err);
       if (!graceful) throw err;
+    } finally {
+      // Remove the temporary folder only if the archive made one.
+      if (tempBlobDir && rootOpfs) {
+        blobStore.clear();
+        try {
+          await rootOpfs.removeEntry(TEMP_BLOB_DIR, { recursive: true });
+        } catch (err) {}
+      }
     }
   }
 
