@@ -2,8 +2,6 @@
   const TYPE = { OPFS: 1, IDB: 2, LS: 4, SS: 8, COOKIE: 16, CACHE: 32 };
   const DECISION = { SKIP: 0, PROCESS: 1, TRUST: 2, ABORT: 3 };
 
-  let blobIdCounter = 0;
-
   function createYielder(threshold = 100) {
     // Testing has shown that Chromium's performance.now() is worst-case slower than all other browsers (but can still be called millions of times per second). Date.now() Browsers like Firefox actually have performance.now() over 10x faster than Date.now(), upwards of hundreds of millions of checks per second. However, this shouldn't really matter too much here as yielding is not checked often enough for this to add up significantly.
     let lastYield = 0;
@@ -86,9 +84,10 @@
   }
 
   // All access of this function will be from LittleExport.prepForCBOR to allow for customization.
+  // The walk stays synchronous. Each blob becomes a holder object, and prepareForCBOR then puts the bytes in the holder.
   function prepForCBOR(
     item,
-    externalBlobs,
+    pendingBlobs,
     seen = new WeakMap(),
     blobMap = new Map(),
   ) {
@@ -109,15 +108,43 @@
         return blobMap.get(item);
       }
 
-      const id = (blobIdCounter++).toString(16);
-      externalBlobs.push({ uuid: id, blob: item });
+      // The bytes stay in the record. A File also keeps its name and its time.
+      const ref = { __le_blob: null, type: item.type };
+      if (typeof item.name === "string") {
+        ref.name = item.name;
+        ref.lastModified = item.lastModified;
+      }
 
-      const ref = { __le_blob_ref: id, type: item.type, size: item.size };
+      pendingBlobs.push({ ref, blob: item });
       blobMap.set(item, ref);
       return ref;
     }
 
     let res;
+
+    // cbor-x writes RegExp and Error objects with tags. A usual object walk makes them empty, thus keep them as they are.
+    if (item instanceof RegExp || item instanceof Error) return item;
+
+    if (item instanceof Map) {
+      res = new Map();
+      seen.set(item, res);
+      for (const [k, v] of item) {
+        res.set(
+          LittleExport.prepForCBOR(k, pendingBlobs, seen, blobMap),
+          LittleExport.prepForCBOR(v, pendingBlobs, seen, blobMap),
+        );
+      }
+      return res;
+    }
+
+    if (item instanceof Set) {
+      res = new Set();
+      seen.set(item, res);
+      for (const v of item) {
+        res.add(LittleExport.prepForCBOR(v, pendingBlobs, seen, blobMap));
+      }
+      return res;
+    }
 
     if (Array.isArray(item)) {
       const keys = Object.keys(item);
@@ -129,7 +156,7 @@
         for (const k of keys) {
           res.data[k] = LittleExport.prepForCBOR(
             item[k],
-            externalBlobs,
+            pendingBlobs,
             seen,
             blobMap,
           );
@@ -140,7 +167,7 @@
         for (let i = 0; i < item.length; i++) {
           res[i] = LittleExport.prepForCBOR(
             item[i],
-            externalBlobs,
+            pendingBlobs,
             seen,
             blobMap,
           );
@@ -153,7 +180,7 @@
         if (Object.prototype.hasOwnProperty.call(item, k)) {
           res[k] = LittleExport.prepForCBOR(
             item[k],
-            externalBlobs,
+            pendingBlobs,
             seen,
             blobMap,
           );
@@ -164,39 +191,87 @@
     return res;
   }
 
-  async function restoreFromCBOR(item, tempBlobDir) {
-    if (!item || typeof item !== "object") return item;
-    if (item.__le_blob_ref) {
-      if (!tempBlobDir) return null;
-      try {
-        const fh = await tempBlobDir.getFileHandle(item.__le_blob_ref);
-        const file = await fh.getFile();
-        return file.slice(0, file.size, item.type);
-      } catch (err) {
-        return null; // Blob not found, gracefully return null
+  // Walk a value and put the bytes of each blob in its holder. This is the only step that waits.
+  async function prepareForCBOR(item) {
+    const pendingBlobs = [];
+    const clean = LittleExport.prepForCBOR(item, pendingBlobs);
+
+    if (pendingBlobs.length > 0) {
+      const buffers = await Promise.all(
+        pendingBlobs.map((p) => p.blob.arrayBuffer()),
+      );
+      for (let i = 0; i < pendingBlobs.length; i++) {
+        pendingBlobs[i].ref.__le_blob = new Uint8Array(buffers[i]);
       }
+    }
+
+    return clean;
+  }
+
+  // The bytes are in the record, thus no file access is necessary and this function stays synchronous.
+  // The seen map keeps circular data safe. Put each new container in the map before you fill it.
+  function restoreFromCBOR(item, seen = new WeakMap()) {
+    if (!item || typeof item !== "object") return item;
+    if (seen.has(item)) return seen.get(item);
+
+    if (item.__le_blob !== undefined) {
+      const bytes = item.__le_blob || new Uint8Array(0);
+      const blob =
+        item.name !== undefined
+          ? new File([bytes], item.name, {
+              type: item.type,
+              lastModified: item.lastModified,
+            })
+          : new Blob([bytes], { type: item.type });
+      seen.set(item, blob);
+      return blob;
     }
 
     if (item.__le_sparse) {
       const arr = new Array(item.length);
+      seen.set(item, arr);
       for (const k in item.data) {
-        arr[k] = await restoreFromCBOR(item.data[k], tempBlobDir);
+        arr[k] = LittleExport.restoreFromCBOR(item.data[k], seen);
       }
       return arr;
     }
 
     if (Array.isArray(item)) {
       const res = new Array(item.length);
+      seen.set(item, res);
       for (let i = 0; i < item.length; i++) {
-        res[i] = await LittleExport.restoreFromCBOR(item[i], tempBlobDir);
+        res[i] = LittleExport.restoreFromCBOR(item[i], seen);
+      }
+      return res;
+    }
+
+    // Maps and Sets can also contain blobs.
+    if (item instanceof Map) {
+      const res = new Map();
+      seen.set(item, res);
+      for (const [k, v] of item) {
+        res.set(
+          LittleExport.restoreFromCBOR(k, seen),
+          LittleExport.restoreFromCBOR(v, seen),
+        );
+      }
+      return res;
+    }
+
+    if (item instanceof Set) {
+      const res = new Set();
+      seen.set(item, res);
+      for (const v of item) {
+        res.add(LittleExport.restoreFromCBOR(v, seen));
       }
       return res;
     }
 
     if (item.constructor === Object) {
       const n = {};
+      seen.set(item, n);
       for (const k in item) {
-        n[k] = await LittleExport.restoreFromCBOR(item[k], tempBlobDir);
+        n[k] = LittleExport.restoreFromCBOR(item[k], seen);
       }
       return n;
     }
@@ -569,6 +644,11 @@
       }
     }
 
+    // Remove data without a copy. Use this to move across the parts of the archive that you do not import.
+    discard(n) {
+      this._internalConsume(n, () => {});
+    }
+
     read(n) {
       if (n === 0) return new Uint8Array(0);
       if (this.totalSize < n) throw new Error("Insufficient chunk data.");
@@ -629,6 +709,11 @@
     readable() {
       const self = this;
       let reader;
+      let key = null;
+      let finished = false;
+
+      // A block cannot be larger than the chunk size plus the tag. A larger value shows damaged data.
+      const MAX_BLOCK_SIZE = CHUNK_SIZE + 4096;
 
       async function ensure(n) {
         while (!self.buffer.has(n)) {
@@ -637,6 +722,13 @@
           self.buffer.push(value);
         }
         return true;
+      }
+
+      function release() {
+        finished = true;
+        try {
+          reader.releaseLock();
+        } catch (err) {}
       }
 
       return new ReadableStream({
@@ -649,7 +741,7 @@
             if (sig !== "LE_ENC") throw new Error("Not an encrypted archive.");
 
             const salt = self.buffer.read(16);
-            const key = await deriveKey(self.password, salt);
+            key = await deriveKey(self.password, salt);
 
             if (!(await ensure(16))) throw new Error("Corrupt header.");
             const initIV = self.buffer.read(12);
@@ -672,53 +764,68 @@
             } catch (err) {
               throw new Error("Incorrect password or corrupt file.");
             }
-
-            while (true) {
-              const p = self.yielder();
-              if (p) await p;
-
-              if (!self.buffer.has(16)) {
-                const { value, done } = await reader.read();
-                if (done) {
-                  if (self.buffer.totalSize === 0) break;
-                  throw new Error("Truncated encrypted stream.");
-                }
-                self.buffer.push(value);
-                continue;
-              }
-              const iv = self.buffer.read(12);
-              const lenRaw = self.buffer.read(4);
-              const lenVal = new DataView(
-                lenRaw.buffer,
-                lenRaw.byteOffset,
-                lenRaw.byteLength,
-              ).getUint32(0, true);
-
-              while (!self.buffer.has(lenVal)) {
-                const { value, done } = await reader.read();
-                if (done) throw new Error("Unexpected EOF in ciphertext.");
-                self.buffer.push(value);
-                const p2 = self.yielder();
-                if (p2) await p2;
-              }
-              const cipher = self.buffer.read(lenVal);
-              const plain = await crypto.subtle.decrypt(
-                { name: "AES-GCM", iv },
-                key,
-                cipher,
-              );
-
-              const pForce = self.yielder(true);
-              if (pForce) await pForce;
-
-              controller.enqueue(new Uint8Array(plain));
-            }
-            controller.close();
           } catch (err) {
+            release();
             controller.error(err);
-          } finally {
-            reader.releaseLock();
           }
+        },
+
+        // Decrypt one block for each pull. The consumer controls the speed, thus the full archive does not go into memory.
+        async pull(controller) {
+          if (finished) return;
+
+          try {
+            while (!self.buffer.has(16)) {
+              const { value, done } = await reader.read();
+              if (done) {
+                if (self.buffer.totalSize !== 0)
+                  throw new Error("Truncated encrypted stream.");
+                release();
+                controller.close();
+                return;
+              }
+              self.buffer.push(value);
+            }
+
+            const iv = self.buffer.read(12);
+            const lenRaw = self.buffer.read(4);
+            const lenVal = new DataView(
+              lenRaw.buffer,
+              lenRaw.byteOffset,
+              lenRaw.byteLength,
+            ).getUint32(0, true);
+
+            if (lenVal === 0 || lenVal > MAX_BLOCK_SIZE)
+              throw new Error("Corrupt encrypted stream.");
+
+            while (!self.buffer.has(lenVal)) {
+              const { value, done } = await reader.read();
+              if (done) throw new Error("Unexpected EOF in ciphertext.");
+              self.buffer.push(value);
+              const p2 = self.yielder();
+              if (p2) await p2;
+            }
+
+            const cipher = self.buffer.read(lenVal);
+            const plain = await crypto.subtle.decrypt(
+              { name: "AES-GCM", iv },
+              key,
+              cipher,
+            );
+
+            const p = self.yielder();
+            if (p) await p;
+
+            controller.enqueue(new Uint8Array(plain));
+          } catch (err) {
+            release();
+            controller.error(err);
+          }
+        },
+
+        cancel(reason) {
+          finished = true;
+          return reader.cancel(reason);
         },
       });
     }
@@ -742,7 +849,6 @@
   }
 
   async function exportData(config = {}) {
-    blobIdCounter = 0;
     const CBOR = window.CBOR;
 
     // Check the LittleExport docs on all the options.
@@ -1121,7 +1227,8 @@
 
                 while (hasMore && !aborted) {
                   const batch = await tryGraceful(async () => {
-                    const batchSizeLimit = 25;
+                    // Each batch makes a new transaction and finds its start position again. A larger batch gives fewer transactions, but it also uses more memory.
+                    const batchSizeLimit = opts.idbBatchSize || 100;
                     return await new Promise((resolve, reject) => {
                       const innerTx = db.transaction(sName, "readonly");
                       const store = innerTx.objectStore(sName);
@@ -1154,19 +1261,9 @@
                   if (batch.keys.length > 0) {
                     const processedValues = [];
                     for (let i = 0; i < batch.values.length; i++) {
-                      const blobsInItem = [];
-                      const cleanValue = LittleExport.prepForCBOR(
-                        batch.values[i],
-                        blobsInItem,
+                      processedValues.push(
+                        await prepareForCBOR(batch.values[i]),
                       );
-                      processedValues.push(cleanValue);
-                      for (const b of blobsInItem) {
-                        await tar.writeStream(
-                          `data/blobs/${b.uuid}`,
-                          b.blob.size,
-                          b.blob.stream(),
-                        );
-                      }
                     }
 
                     await tar.writeEntry(
@@ -1388,24 +1485,16 @@
 
             await tryGraceful(async () => {
               const cache = await caches.open(cacheName);
+              // A counter gives a unique name for each record. A short hash of the URL causes collisions, because many URLs have the same start. The true URL stays in the metadata.
+              let entryId = 0;
               for (const req of await cache.keys()) {
                 const res = await cache.match(req);
                 if (!res) continue;
                 const blob = await res.blob();
-                const safeHash = btoa(req.url).slice(0, 50).replace(/\//g, "_");
-                const blobsInItem = [];
-                const cleanData = LittleExport.prepForCBOR(blob, blobsInItem);
+                const safeHash = (entryId++).toString(36);
+                const cleanData = await prepareForCBOR(blob);
 
-                // Write the external blobs (the large file body)
-                for (const b of blobsInItem) {
-                  await tar.writeStream(
-                    `data/blobs/${b.uuid}`,
-                    b.blob.size,
-                    b.blob.stream(),
-                  );
-                }
-
-                // Write the metadata record containing the reference
+                // Write one record that holds the metadata and the body
                 await tar.writeEntry(
                   `data/cache/${encodeURIComponent(cacheName)}/${safeHash}.${cborExtensionName}`,
                   encoder.encode({
@@ -1486,25 +1575,28 @@
       });
 
     const cborExtensionName = opts.cborExtensionName;
-    let sourceInput = opts.source;
-    if (!sourceInput) {
-      await new Promise((resolve) => {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.onchange = (e) => {
-          const file = e.target.files[0];
-          resolve(file);
-        };
-
-        input.click();
-      });
-    }
-
     const logger = opts.logger || (() => {});
     const yielder = createYielder(opts.logSpeed);
     const graceful = opts.graceful !== false;
     const useOnVisit = typeof opts.onVisit === "function";
     const onVisit = opts.onVisit;
+
+    let sourceInput = opts.source;
+    if (!sourceInput) {
+      // Keep the selected file. If you discard the result, the source stays empty and the import fails.
+      sourceInput = await new Promise((resolve) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.onchange = (e) => resolve(e.target.files[0] || null);
+        input.oncancel = () => resolve(null); // Not all browsers send this event
+        input.click();
+      });
+
+      if (!sourceInput) {
+        logger("Import cancelled.");
+        return;
+      }
+    }
 
     let aborted = false;
     let rootOpfs = null;
@@ -1691,7 +1783,7 @@
           if (streamBuffer.totalSize === 0 && !done) await ensure(1);
           if (streamBuffer.totalSize === 0) break;
           const toSkip = Math.min(remaining, streamBuffer.totalSize);
-          streamBuffer.read(toSkip); // discard
+          streamBuffer.discard(toSkip);
           remaining -= toSkip;
         }
       }
@@ -1731,15 +1823,14 @@
               }
             }
           }
+          // Only a close makes the data permanent, thus the file changes in one step.
+          await writer.close();
         } catch (err) {
+          // Abort keeps the earlier data. A close after an error makes the incomplete file permanent.
           try {
-            await writer.abort();
+            await writer.abort(err);
           } catch (_) {}
           throw err;
-        } finally {
-          try {
-            await writer.close();
-          } catch (err) {}
         }
       }
 
@@ -1747,16 +1838,6 @@
         opts.opfs !== false && navigator.storage
           ? await navigator.storage.getDirectory()
           : null;
-
-      const TEMP_BLOB_DIR = "._littleexport_temp_" + crypto.randomUUID();
-      let tempBlobDir;
-      try {
-        if (rootOpfs) {
-          tempBlobDir = await rootOpfs.getDirectoryHandle(TEMP_BLOB_DIR, {
-            create: true,
-          });
-        }
-      } catch (err) {}
 
       const processedDbSchemas = new Set();
 
@@ -1840,7 +1921,7 @@
           .replace(/\0/g, "")
           .trim();
         const entrySize = parseInt(sizeStr, 8) || 0;
-        const padding = (512 - (entrySize % 512)) % 512;
+        let padding = (512 - (entrySize % 512)) % 512;
 
         if (typeFlag === 120) {
           if (!(await ensure(entrySize))) throw new Error("Unexpected EOF.");
@@ -1853,7 +1934,11 @@
         let size = entrySize;
         if (paxOverrides) {
           if (paxOverrides.path) name = paxOverrides.path;
-          if (paxOverrides.size) size = parseInt(paxOverrides.size, 10);
+          if (paxOverrides.size) {
+            size = parseInt(paxOverrides.size, 10);
+            // The usual header keeps a size of 0 for very large files. Calculate the padding again from the true size.
+            padding = (512 - (size % 512)) % 512;
+          }
           paxOverrides = null;
         }
 
@@ -1870,9 +1955,6 @@
         } else if (name.startsWith("opfs/")) {
           status.category = "OPFS";
           status.detail = name.replace("opfs/", "");
-        } else if (name.startsWith("data/blobs/")) {
-          status.category = "Blobs";
-          status.detail = "Re-linking Data";
         } else {
           status.category = "Config";
           status.detail = name;
@@ -1888,23 +1970,9 @@
         }
 
         if (name.startsWith("data/")) {
+          // Older archives kept the blobs in their own entries. The bytes are now in the record, thus move across such an entry without a read into memory.
           if (name.startsWith("data/blobs/")) {
-            const uuid = name.split("/").pop();
-            if (tempBlobDir) {
-              let dataConsumed = false;
-              await tryGraceful(async () => {
-                const fh = await tempBlobDir.getFileHandle(uuid, {
-                  create: true,
-                });
-                await streamToWriter(await fh.createWritable(), size);
-                dataConsumed = true;
-              }, `Blob ${uuid}`);
-              if (!dataConsumed) {
-                await skip(size);
-              }
-            } else {
-              await skip(size);
-            }
+            await skip(size);
             await skip(padding);
             continue;
           } else {
@@ -2105,10 +2173,7 @@
                   continue;
 
                 const decoded = decoder.decode(d);
-                const [keys, values] = await LittleExport.restoreFromCBOR(
-                  decoded,
-                  tempBlobDir,
-                );
+                const [keys, values] = LittleExport.restoreFromCBOR(decoded);
 
                 if (!dbCache[dbName]) {
                   const db = await tryGraceful(async () => {
@@ -2173,10 +2238,7 @@
                 await tryGraceful(async () => {
                   const data = decoder.decode(d);
                   const cache = await caches.open(cacheName);
-                  const restoredData = await LittleExport.restoreFromCBOR(
-                    data.data,
-                    tempBlobDir,
-                  );
+                  const restoredData = LittleExport.restoreFromCBOR(data.data);
                   const blob =
                     restoredData instanceof Blob
                       ? restoredData
@@ -2257,12 +2319,6 @@
       logger(`Error: ${err.message}`);
       if (opts.onerror) opts.onerror(err);
       if (!graceful) throw err;
-    } finally {
-      if (rootOpfs) {
-        try {
-          await rootOpfs.removeEntry(TEMP_BLOB_DIR, { recursive: true });
-        } catch (err) {}
-      }
     }
   }
 
@@ -2280,10 +2336,11 @@
           window.FileSystemDirectoryHandle &&
           source instanceof FileSystemDirectoryHandle
         ) {
-          const files = [];
-          const dirs = [];
-
+          // Each level keeps its own lists. Shared lists cause a second write of the files of the parent folder.
           async function collect(dir, currentPath) {
+            const files = [];
+            const dirs = [];
+
             for await (const [name, entry] of dir.entries()) {
               if (entry.kind === "directory" && name === "PaxHeaders") continue;
               const fullPath = currentPath ? `${currentPath}/${name}` : name;
@@ -2358,7 +2415,7 @@
         await tar.close();
       } catch (err) {
         try {
-          await writable.abort(e);
+          await writable.abort(err);
         } catch (_) {}
       }
     })();
@@ -2537,6 +2594,7 @@
     exportData,
     deriveKey,
     prepForCBOR,
+    prepareForCBOR,
     restoreFromCBOR,
     importFromFolder,
     folderToTarStream,
